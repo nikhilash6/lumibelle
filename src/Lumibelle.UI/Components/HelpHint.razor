@@ -1,0 +1,12 @@
+<span class="help-hint">
+    <button type="button" class="help-hint-trigger" popovertarget="@_id" style="anchor-name: --@_id" aria-label="@($"Help: {Label}")" aria-describedby="@_id">
+        <span aria-hidden="true">?</span>
+    </button>
+    <span id="@_id" class="help-hint-content" popover="auto" style="position-anchor: --@_id" role="note">@Text</span>
+</span>
+
+@code {
+    [Parameter, EditorRequired] public string Label { get; set; } = "";
+    [Parameter, EditorRequired] public string Text { get; set; } = "";
+    private readonly string _id = $"help-{Guid.NewGuid():N}";
+}

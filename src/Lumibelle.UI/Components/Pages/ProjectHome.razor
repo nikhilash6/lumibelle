@@ -1,0 +1,82 @@
+@inherits ProjectAwareComponent
+@inject IProjectStore ProjectStore
+@inject IDialogService DialogService
+
+<PageTitle>@(_project is null ? "Project" : _project.Name) · Lumibelle</PageTitle>
+@if (_loading)
+{
+    <div class="loading-state" role="status"><MudProgressCircular Indeterminate="true" Size="Size.Small" Color="Color.Primary" />Opening your project…</div>
+}
+else if (_error is not null)
+{
+    <h1 class="state-title">This project couldn’t be opened</h1>
+    <MudButton Href="/" Class="back-link">All projects</MudButton>
+    <MudAlert Severity="Severity.Error" role="alert">@_error</MudAlert>
+    <MudButton OnClick="LoadAsync" Variant="Variant.Outlined" Class="mt-4">Try again</MudButton>
+}
+else if (_project is null)
+{
+    <div class="empty-library">
+        <span class="empty-icon"><MudIcon Icon="@Icons.Material.Outlined.FolderOff" Size="Size.Large" /></span>
+        <h1 class="state-title">Project not found</h1><p>This project may have moved or is no longer in your library.</p>
+        <MudButton Href="/" Color="Color.Primary">Back to your projects</MudButton>
+    </div>
+}
+else
+{
+    <PagePosition ProjectId="Id" Studio="overview" />
+    <ProjectNavigation Project="_project" />
+    <section class="project-heading">
+        <div class="project-heading-copy"><p class="eyebrow">PROJECT OVERVIEW</p><h1>@_project.Name</h1>
+        @if (!string.IsNullOrWhiteSpace(_project.Description)) { <p class="project-synopsis">@_project.Description</p> }
+        </div>
+        <div class="project-heading-actions">
+            <MudButton OnClick="EditProjectAsync" Disabled="_dialogOpen" Variant="Variant.Outlined" StartIcon="@Icons.Material.Outlined.Edit" Size="Size.Small">Edit project</MudButton>
+            <p class="project-date"><MudIcon Icon="@Icons.Material.Outlined.CalendarToday" Size="Size.Small" />Created <time datetime="@_project.CreatedUtc.ToString("O")">@_project.CreatedUtc.ToLocalTime().ToString("d MMMM yyyy")</time></p>
+        </div>
+    </section>
+    <div class="project-areas">
+        <article><span class="area-icon story-area"><MudIcon Icon="@Icons.Material.Outlined.EditNote" /></span><h2>Script</h2><p>Turn an idea into a screenplay. Write, revise, and develop it with your chosen text model.</p><MudButton Href="@(ProjectLink(Id, "/script"))" Color="Color.Primary" Variant="Variant.Outlined" EndIcon="@Icons.Material.Outlined.ArrowForward">Open script studio</MudButton></article>
+        <article><span class="area-icon assets-area"><MudIcon Icon="@Icons.Material.Outlined.Landscape" /></span><h2>Assets</h2><p>Develop characters, environments, and props. Build their reference libraries.</p><MudButton Href="@(ProjectLink(Id, "/assets"))" Color="Color.Primary" Variant="Variant.Outlined" EndIcon="@Icons.Material.Outlined.ArrowForward">Open assets studio</MudButton></article>
+        <article><span class="area-icon shots-area"><MudIcon Icon="@Icons.Material.Outlined.Movie" /></span><h2>Shots</h2><p>Plan coverage, cast, dialogue and camera direction from your script scenes.</p><MudButton Href="@(ProjectLink(Id, "/shots"))" Color="Color.Primary" Variant="Variant.Outlined" EndIcon="@Icons.Material.Outlined.ArrowForward">Open shots studio</MudButton></article>
+    </div>
+}
+@code {
+    [Parameter] public Guid Id { get; set; }
+    private ProjectInfo? _project;
+    private string? _error;
+    private bool _loading = true;
+    private bool _dialogOpen;
+    protected override Task OnParametersSetAsync() => LoadAsync();
+
+    private async Task EditProjectAsync()
+    {
+        if (_dialogOpen || _project is null) return;
+        var original = _project;
+        _dialogOpen = true;
+        try
+        {
+            var dialog = await DialogService.ShowAsync<ProjectDialog>("Edit project",
+                new DialogParameters { [nameof(ProjectDialog.Project)] = original },
+                new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+            var result = await dialog.Result;
+            if (Id == original.Id && result is { Canceled: false, Data: ProjectInfo updated })
+                _project = updated;
+        }
+        finally { _dialogOpen = false; }
+    }
+    private async Task LoadAsync()
+    {
+        var requestedId = Id;
+        _loading = true;
+        _error = null;
+        _project = null;
+        try
+        {
+            var project = await ProjectStore.GetAsync(requestedId);
+            if (requestedId == Id) _project = project;
+        }
+        catch (ProjectStoreException exception) { if (requestedId == Id) _error = exception.Message; }
+        finally { if (requestedId == Id) _loading = false; }
+    }
+}

@@ -1,0 +1,65 @@
+@inherits LayoutComponentBase
+@inject NavigationManager Navigation
+@inject AppearanceState Appearance
+@implements IDisposable
+
+<MudThemeProvider Theme="StudioTheme.Theme" IsDarkMode="Appearance.IsDark" ObserveSystemDarkModeChange="false" />
+<MudPopoverProvider />
+<MudDialogProvider />
+<MudSnackbarProvider />
+<HostBridge />
+<a class="skip-link" href="#main-content">Skip to content</a>
+<div class="studio-shell">
+    <header class="studio-header">
+        <a class="brand" href="/" aria-label="Lumibelle home">
+            <span class="brand-lockup" aria-hidden="true">
+                <img class="brand-symbol" src="_content/Lumibelle.UI/branding/lumibelle-mark.svg" width="64" height="48" alt="" />
+                <span class="brand-wordmark"></span>
+            </span>
+        </a>
+        <SectionOutlet SectionName="project-identity" />
+        <nav class="global-navigation" aria-label="Workspace">
+            <NavLink href="/" Match="NavLinkMatch.All">Projects</NavLink>
+            <NavLink href="@_aiSettingsUrl" data-ai-settings-link>AI settings</NavLink>
+            <NavLink href="/trash">Trash</NavLink>
+        </nav>
+        <MudMenu Icon="@Icons.Material.Outlined.Menu" AriaLabel="Application navigation" Dense="true" Class="global-navigation-menu">
+            <MudMenuItem Href="/">Projects</MudMenuItem>
+            <MudMenuItem Href="@_aiSettingsUrl">AI settings</MudMenuItem>
+            <MudMenuItem Href="/trash">Trash</MudMenuItem>
+        </MudMenu>
+        <AppearanceMenu />
+        <lumibelle.Components.AI.AiActivity />
+    </header>
+    <main id="main-content" class="studio-content" tabindex="-1">
+        <div class="studio-projectbar">
+            <SectionOutlet SectionName="project-navigation" />
+            <SectionOutlet SectionName="studio-actions" />
+            <SectionOutlet SectionName="workspace-toolbar" />
+        </div>
+        @Body
+    </main>
+</div>
+@code {
+    private string _aiSettingsUrl = "/settings/ai";
+    protected override void OnInitialized()
+    {
+        _aiSettingsUrl = AiSettingsNavigation.Link(Navigation);
+        Navigation.LocationChanged += LocationChanged;
+        Appearance.Changed += AppearanceChanged;
+    }
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender) await Appearance.InitializeAsync();
+    }
+    private void AppearanceChanged() => _ = InvokeAsync(StateHasChanged);
+    private void LocationChanged(object? sender, LocationChangedEventArgs args)
+    {
+        _aiSettingsUrl = AiSettingsNavigation.Link(Navigation);
+        _ = InvokeAsync(StateHasChanged);
+    }
+    public void Dispose() { Navigation.LocationChanged -= LocationChanged; Appearance.Changed -= AppearanceChanged; }
+}
+<div id="blazor-error-ui" role="alert" data-nosnippet>
+    Lumibelle encountered a problem. <a href="">Reload the page</a> to reconnect.
+</div>

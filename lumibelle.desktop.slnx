@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="src/Lumibelle.Core/Lumibelle.Core.csproj" />
+  <Project Path="src/Lumibelle.UI/Lumibelle.UI.csproj" />
+  <Project Path="src/Lumibelle.Desktop/Lumibelle.Desktop.csproj" />
+</Solution>

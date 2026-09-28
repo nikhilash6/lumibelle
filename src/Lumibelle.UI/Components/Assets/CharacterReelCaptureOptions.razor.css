@@ -1,0 +1,6 @@
+.reel-capture-options { display:flex; flex-wrap:wrap; gap:10px; margin:8px 0; }
+.reel-capture-options label { display:block; flex:1 1 190px; min-width:0; color:var(--muted); font-size:var(--lumi-font-size-meta); }
+.reel-capture-options select { display:block; width:100%; min-width:0; padding:6px 8px; border:1px solid var(--lumi-control-border); border-radius:var(--lumi-radius-control); color:var(--ink); background:var(--lumi-surface); }
+.reel-capture-options select:disabled { opacity:.5; }
+.reel-capture-options select:focus-visible { outline:2px solid var(--plum); outline-offset:2px; }
+.capture-hint { color:var(--muted); font-size:var(--lumi-font-size-small); margin:6px 0; }

@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk.Razor">
+  <PropertyGroup><TargetFramework>net10.0</TargetFramework><RootNamespace>lumibelle</RootNamespace></PropertyGroup>
+  <ItemGroup><InternalsVisibleTo Include="Lumibelle.Tests" /><PackageReference Include="Microsoft.AspNetCore.Components.Web" /><PackageReference Include="MudBlazor" /><PackageReference Include="Markdig" /><PackageReference Include="HtmlSanitizer" /></ItemGroup>
+  <ItemGroup><ProjectReference Include="../Lumibelle.Core/Lumibelle.Core.csproj" /></ItemGroup>
+  <PropertyGroup><StaticWebAssetProjectMode>Default</StaticWebAssetProjectMode></PropertyGroup>
+</Project>

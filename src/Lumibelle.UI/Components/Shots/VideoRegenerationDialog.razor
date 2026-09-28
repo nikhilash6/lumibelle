@@ -1,0 +1,129 @@
+@implements IAsyncDisposable
+@inject AiReelCapture Reels
+@inject AiVideoJobCapture Takes
+@inject AiJobCoordinator Jobs
+@inject IAiReviewGate Reviews
+@using lumibelle.Components.Assets
+
+<RepeatGenerationDialog Visible="@(Reel is not null)" Title="Regenerate reel" Kind="reel" SourceSeed="@(Reel?.Generation?.Seed)"
+    Description="Create new reels using the saved prompt, references, duration, model and sampling settings."
+    Destination="@Destination" Summary="@(Snapshot is { } saved ? $"{H3Policy.QualityLabel(saved.Shot)} · {saved.Shot.Duration:0.###} s · {saved.Shot.Aspect}" : "")"
+    Prompt="@(Snapshot?.Prompt ?? "")" Busy="_busy" Locked="Locked" Error="@_error" Confirmed="RepeatReels" Closed="Close"
+    Notice="@(_submission is not null ? "The request is captured. Retry submits the same takes without adding duplicates." : null)">
+    <ChildContent>
+        @if (Snapshot is { } reelSnapshot) {
+            <label class="video-regeneration-field">Resolution
+                <select aria-label="Resolution" @bind="_resolution" disabled="@Locked">
+                    @foreach (var resolution in VideoResolutions.Choices) {
+                        <option value="@VideoResolutions.Key(resolution)">@VideoResolutions.Option(reelSnapshot.Shot.Aspect, resolution)</option>
+                    }
+                </select>
+            </label>
+            <p class="field-hint">Keeping the seed lets you try the same take at another resolution. Motion and details may still change.</p>
+            <label class="video-regeneration-check"><input type="checkbox" @bind="_keepFrames" disabled="@(Locked || reelSnapshot.OutputPolicy is null)" />Keep lossless frames</label>
+            <p class="field-hint">@(reelSnapshot.OutputPolicy is null ? "This reel's saved request always keeps lossless frames." : "Keeps a lossless archive of every frame beside the MP4, so keyframes come from the original frames rather than the compressed video. Uses more storage.")</p>
+        }
+    </ChildContent>
+</RepeatGenerationDialog>
+
+<InlineDialog Visible="Take is not null" VisibleChanged="async v => { if (!v) await Close(); }" Options="Options" Class="video-regeneration-dialog"
+              Title="@($"Regenerate {Kind}")" CloseLabel="@($"Close regenerate {Kind}")" CloseDisabled="_busy">
+<DialogContent>
+    @if (Snapshot is { } snapshot) {
+    <DialogEscape Pressed="Close" />
+    <p><strong>@Name</strong> · @Width × @Height</p>
+    <p>Source seed <strong class="video-seed">@SourceSeed</strong></p>
+    <label class="video-regeneration-field">Seed
+        <select aria-label="Seed mode" @bind="_seedMode" disabled="@Locked">
+            <option value="same">Keep source seed</option><option value="random">New random seed</option><option value="custom">Custom seed</option>
+        </select>
+    </label>
+    @if (_seedMode == "custom") {
+        <label class="video-regeneration-field">Custom seed<input aria-label="Custom seed" type="text" inputmode="numeric" @bind="_seedText" @bind:event="oninput" disabled="@Locked" /></label>
+        @if (!ValidSeed) { <p role="alert">Enter a whole-number seed from 0 to @long.MaxValue.</p> }
+    }
+    <label class="video-regeneration-field">Resolution
+        <select aria-label="Resolution" @bind="_resolution" disabled="@Locked">
+            @foreach (var resolution in VideoResolutions.Choices) {
+                <option value="@VideoResolutions.Key(resolution)">@VideoResolutions.Option(snapshot.Shot.Aspect, resolution)</option>
+            }
+        </select>
+    </label>
+    <p>Reuses the captured prompt, reference inputs, duration, model and sampling settings. Saves a new @Kind.</p>
+    <p class="field-hint">Keep the seed to try the same take at higher resolution. Motion and details can still change with resolution.</p>
+    <label class="video-regeneration-check"><input type="checkbox" @bind="_keepFrames" disabled="@(Locked || snapshot.OutputPolicy is null)" />Save lossless frames</label>
+    <p class="field-hint">@(snapshot.OutputPolicy is null ? "This take's saved request always keeps lossless frames." : "Keeps a lossless archive of every frame beside the MP4, so frames saved to Assets are exact rather than taken from the compressed video. Uses more storage.")</p>
+    @if (_submission is not null) { <p class="field-hint">Captured seed: @_submission.Batch!.Candidates[0].Seed. Retry submits this same request.</p> }
+    @if (SeedChanged) { <p class="field-hint">A different seed explores a new take.</p> }
+    @if (_error is not null) { <p role="alert">@_error</p> }
+    @if (_busy) { <p role="status">@(_submission is null ? "Preparing captured inputs…" : "Submitting request…")</p> }
+    }
+</DialogContent>
+<DialogActions>
+    <MudButton OnClick="Close" Disabled="_busy">Cancel</MudButton>
+    <MudButton OnClick="Submit" Disabled="@(_busy || !ValidSeed)" Variant="Variant.Filled" Color="Color.Primary">@(_submission is null ? "Generate " + Kind : "Retry submission")</MudButton>
+</DialogActions>
+</InlineDialog>
+
+@code {
+    [Parameter] public Guid ProjectId { get; set; }
+    [Parameter] public AssetReferenceReel? Reel { get; set; }
+    [Parameter] public ShotTake? Take { get; set; }
+    [Parameter] public string Destination { get; set; } = "";
+    [Parameter] public EventCallback Closed { get; set; }
+    [Parameter] public EventCallback<AiJobSubmission> Submitted { get; set; }
+    private Guid? SourceId => Reel?.Id ?? Take?.Id;
+    private VideoSnapshot? Snapshot => Reel?.Generation?.Snapshot ?? Take?.Snapshot;
+    private long SourceSeed => Reel?.Generation?.Seed ?? Take?.Seed ?? 0;
+    private string Kind => Reel is not null ? "reel" : "take";
+    private string Name => Reel?.Name ?? Take?.Snapshot.Shot.Title ?? "";
+    private int Width => Reel?.Media.Width ?? Take?.Width ?? 0;
+    private int Height => Reel?.Media.Height ?? Take?.Height ?? 0;
+    private bool Locked => _busy || _submission is not null;
+    private bool SeedChanged => _seedMode != "same";
+    private bool ValidSeed => _seedMode != "custom" || long.TryParse(_seedText, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var seed) && seed >= 0;
+    private static readonly DialogOptions Options = new() { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false };
+    private readonly CancellationTokenSource _lifetime = new();
+    private bool _busy;
+    private string _resolution = "native", _seedMode = "same", _seedText = "";
+    private bool _keepFrames = true;
+    private string? _error;
+    private AiJobSubmission? _submission;
+    private Guid? _sourceId;
+    protected override void OnParametersSet()
+    {
+        if (_sourceId == SourceId) return;
+        _sourceId = SourceId; _resolution = Reel?.Generation is { } generation ? VideoResolutions.Key(VideoResolutions.Selected(generation.Recipe)) : "native";
+        _keepFrames = Snapshot?.OutputPolicy?.SaveLosslessFrames ?? true;
+        _seedMode = Reel is null ? "same" : "random"; _seedText = SourceSeed.ToString(System.Globalization.CultureInfo.InvariantCulture); _submission = null; _error = null;
+    }
+    private Task Close() => _busy ? Task.CompletedTask : Closed.InvokeAsync();
+    private int _count = 1;
+    private Task RepeatReels(RepeatGenerationDialog.Choices choices)
+    {
+        if (Locked) return Submit();
+        _count = choices.Count; _seedMode = choices.KeepSeed ? "same" : "random";
+        return Submit();
+    }
+    private async Task Submit()
+    {
+        if (_busy || SourceId is null || !ValidSeed || !VideoResolutions.TryParse(_resolution, out var resolution)) return;
+        _busy = true; _error = null;
+        try {
+            long? seed = _seedMode == "same" ? SourceSeed : _seedMode == "custom" ? long.Parse(_seedText, System.Globalization.CultureInfo.InvariantCulture) : null;
+            if (_submission is null) {
+                var id = Guid.NewGuid(); var tab = await Reviews.TabIdAsync();
+                _submission = Reel is not null
+                    ? await Reels.CaptureRegenerationAsync(id, tab, ProjectId, Reel.Id, resolution, _seedMode == "same", seed, _count, _keepFrames, _lifetime.Token)
+                    : await Takes.CaptureRegenerationAsync(id, tab, ProjectId, Take!.Id, resolution, seed, _keepFrames, _lifetime.Token);
+            }
+            await Jobs.EnqueueAsync(_submission, _lifetime.Token);
+            await Submitted.InvokeAsync(_submission);
+            await Closed.InvokeAsync();
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (Exception e) { _error = e.Message; }
+        finally { _busy = false; }
+    }
+    public ValueTask DisposeAsync() { _lifetime.Cancel(); _lifetime.Dispose(); return ValueTask.CompletedTask; }
+}

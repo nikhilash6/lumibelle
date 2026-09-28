@@ -1,0 +1,87 @@
+@inject IProjectAiPreferencesStore Store
+@implements IDisposable
+
+<section class="project-lora-visibility settings-card" aria-labelledby="project-lora-heading">
+    <h2 id="project-lora-heading">LoRA visibility <span>· @Summary</span></h2>
+    <p class="field-hint">Applies to every asset in this project, in Create and Edit.</p>
+    @if (_saved is not null)
+    {
+        <label for="lora-only-tags">Only show these tags</label>
+        <input id="lora-only-tags" @bind="_only" @bind:event="oninput" disabled="@Locked" placeholder="Leave empty to show all" aria-describedby="lora-only-hint" />
+        <p id="lora-only-hint" class="field-hint">Match any listed tag. When set, untagged LoRAs are hidden.</p>
+        <label for="lora-hidden-tags">Hide these tags</label>
+        <input id="lora-hidden-tags" @bind="_hidden" @bind:event="oninput" disabled="@Locked" placeholder="e.g. nsfw" aria-describedby="lora-hidden-hint" />
+        <p id="lora-hidden-hint" class="field-hint">Separate tags with commas. Hidden tags always take precedence.</p>
+        @if (KnownTags.Any()) { <p class="field-hint">Library tags: @string.Join(", ", KnownTags)</p> }
+        <div class="lora-actions"><button type="button" @onclick="SaveAsync" disabled="@(Locked || _conflict)">Save project visibility</button><button type="button" @onclick="Cancel" disabled="@Locked">Cancel visibility changes</button></div>
+    }
+    <div class="lora-actions"><button type="button" @onclick="ReloadAsync" disabled="@Locked">Reload project visibility</button></div>
+    @if (_status is not null) { <p role="status" class="field-hint">@_status</p> }
+    @if (_error is not null) { <p role="alert" class="generation-error">@_error</p> }
+</section>
+
+@code {
+    [Parameter] public Guid ProjectId { get; set; }
+    [Parameter] public AiSettings Settings { get; set; } = new();
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public EventCallback<ProjectAiPreferences?> Changed { get; set; }
+    private Guid? _loadedId;
+    private ProjectAiPreferences? _saved;
+    private bool _busy, _conflict, _interactive, _disposed, _available;
+    private readonly CancellationTokenSource _lifetime = new();
+    private string _only = "", _hidden = "";
+    private string? _status, _error;
+    private bool Locked => Disabled || _busy || !_interactive;
+    private string Summary => _error is not null ? "Needs attention" : _busy ? "Working…" : _saved is null ? "Unavailable" : _saved.LoraVisibility.OnlyTags.Count == 0 && _saved.LoraVisibility.HiddenTags.Count == 0 ? "All LoRAs" : "Filtered";
+    private IEnumerable<string> KnownTags => Settings.LoraLibrary.SelectMany(d => d.Tags).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase);
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_loadedId == ProjectId) return;
+        _loadedId = ProjectId; _saved = null;
+        await LoadAsync(false);
+    }
+    protected override void OnAfterRender(bool firstRender) { if (firstRender) { _interactive = true; StateHasChanged(); } }
+    private Task ReloadAsync() => Locked ? Task.CompletedTask : LoadAsync(true);
+    private async Task LoadAsync(bool keepDraft)
+    {
+        _busy = true; _available = false; _error = _status = null;
+        await Changed.InvokeAsync(null);
+        try
+        {
+            var saved = await Store.LoadAsync(ProjectId, _lifetime.Token);
+            if (_disposed) return;
+            LoraPolicy.ValidateVisibility(saved.LoraVisibility);
+            var hadDraft = _saved is not null;
+            _saved = saved; _conflict = false; _available = true;
+            if (!keepDraft || !hadDraft) ResetDraft();
+            else _status = "Saved visibility reloaded. Your draft is still here; review it before saving.";
+            await Changed.InvokeAsync(_saved);
+        }
+        catch (WorkspaceStoreException e) { _error = e.Message; }
+        catch (OperationCanceledException) when (_disposed) { }
+        finally { _busy = false; }
+    }
+    private void ResetDraft() { _only = string.Join(", ", _saved!.LoraVisibility.OnlyTags); _hidden = string.Join(", ", _saved.LoraVisibility.HiddenTags); }
+    private void Cancel() { if (Locked) return; ResetDraft(); _status = "Draft reset to saved visibility."; if (_available && !_conflict) _error = null; }
+    private async Task SaveAsync()
+    {
+        if (Locked || _conflict || _saved is null) return;
+        var visibility = new LoraVisibility { OnlyTags = LoraPolicy.ParseTags(_only), HiddenTags = LoraPolicy.ParseTags(_hidden) };
+        _busy = true; _status = "Saving project visibility…"; _error = null;
+        await Changed.InvokeAsync(null);
+        try
+        {
+            LoraPolicy.ValidateVisibility(visibility);
+            _saved = await Store.SetLoraVisibilityAsync(ProjectId, visibility, _saved.LoraVisibilityRevision, _lifetime.Token);
+            if (_disposed) return;
+            _available = true;
+            ResetDraft(); _status = "Project visibility saved.";
+        }
+        catch (WorkspaceConflictException) { _conflict = true; _available = false; _status = null; _error = "Another tab changed project visibility. Reload project visibility, then review and retry your draft."; }
+        catch (WorkspaceStoreException e) { _status = null; _error = e.Message; }
+        catch (OperationCanceledException) when (_disposed) { }
+        finally { _busy = false; if (!_disposed) await Changed.InvokeAsync(_available ? _saved : null); }
+    }
+    public void Dispose() { _disposed = true; _lifetime.Cancel(); _lifetime.Dispose(); }
+}

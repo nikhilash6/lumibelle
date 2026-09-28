@@ -1,0 +1,61 @@
+@implements IAsyncDisposable
+
+<div class="guidance-assistance" @ref="_origin">
+    <TextAssistance Request="GuidancePresentation" Preparing="_submitting" HasError="@(_pending is not null)" ReviewRequested="InspectGuidance" CancelRequested="CancelRequest" @ref="_assist" ProjectId="@(Context?.Target.ProjectId ?? Guid.Empty)" Studio="TextAssistantStudio.PromptEnhancement" Title="@AssistanceTitle" Disabled="@(Disabled || Context is null)" ModelLocked="@(_busy || _applying)" SelectionChanged="ModelChanged" Opened="PrepareComposer">
+        <ChildContent><p class="field-hint">@Context?.AssetName · @Context?.Label</p>
+        @if (IsVisualDescription)
+        {
+            <p class="field-hint">Inspect this image with a vision model to draft a detailed description. Review and edit it before saving. You can also write the description yourself in image details.</p>
+        }
+        else { <label class="inspection-toggle"><input type="checkbox" @bind="_inspect" disabled="@(_busy || _applying)" /> Inspect an image</label> }
+        @if (_inspect)
+        {
+            <label>Image to inspect<select @bind="_imageKey" disabled="@(_busy || _applying || IsVisualDescription)"><option value="">Choose an active image…</option>@foreach (var asset in Library.Assets) { <optgroup label="@asset.Name">@foreach (var image in asset.Images) { <option value="@Key(asset.Id, image.Id)">@(image.Name ?? string.Join(", ", image.Tags)) · @(asset.Looks.FirstOrDefault(l => l.Id == image.LookId)?.Name ?? "General") · @image.Id.ToString()[..8]</option> }</optgroup> }</select></label>
+            <p class="field-hint">Sends only this explicitly selected image to @_model?.Model.Name through @_model?.Model.Backend. Its original remains unchanged.</p>
+            @if (VisionIssue is { } issue) { <p role="status" class="field-error">@issue</p> }
+        }
+@if (_error is not null) { <p role="alert">@_error</p> }</ChildContent>
+        <Actions><MudButton Class="ai-assist-action" OnClick="Start" Disabled="@(!CanStart)" Variant="Variant.Filled" Color="Color.Primary"><AiAssistIcon />@(IsVisualDescription ? "Describe image" : "Suggest")</MudButton>@if (_pending is not null) { <MudButton OnClick="RetryEnqueue" Disabled="_submitting">Retry saving request</MudButton> }</Actions>
+    </TextAssistance>
+    @if (_inlineError is not null) { <p role="alert" class="field-error">@_inlineError</p> }
+</div>
+@if (Embedded)
+{
+    @if (_open) { <section class="guidance-dialog guidance-inline" role="region" aria-label="Guidance suggestion"><h3>@AssistanceTitle · @Context?.Label</h3>@ReviewContent<div class="guidance-actions">@ReviewActions</div></section> }
+}
+else
+{
+    <InlineDialog Visible="_open" VisibleChanged="VisibleChanged" Options="Options" Class="guidance-dialog" OnKeyDown="DialogKeyDown"
+                  Title="@AssistanceTitle" Context="@Context?.Label" CloseLabel="Close guidance review">
+        <DialogContent>@ReviewContent</DialogContent>
+        <DialogActions>@ReviewActions</DialogActions>
+    </InlineDialog>
+}
+@code {
+    private RenderFragment ReviewContent => @<div>
+        <p class="field-hint">@(IsVisualDescription ? "A text substitute for inspecting this image during shot composition. Check visual details, omissions and uncertainty before applying." : "Prompt instructions for Shots, not guaranteed constraints. Review and edit the suggestion before applying it to this field.")</p>
+        <lumibelle.Components.AI.AiResultAcknowledgement Observed="@(_observedResultJob is { } read && read.Id == _job?.Id ? new[] { read } : [])" />
+        @if (_job is { } job) { <lumibelle.Components.AI.AiJobProgressView Job="job" Queue="Jobs.View" Progress="Jobs.Progress(job.Id)" /> }
+        @if (_submitting) { <p role="status">Saving guidance request…</p> }
+        @if (_request is { } request)
+        {
+            @if (_job is { } capturedJob) { <AiTextRequestDetails JobId="capturedJob.Id" /> }
+            <p class="field-hint">@request.Context.AssetName · @request.Context.Name · @request.Model.Name</p>
+            <div class="guidance-comparison@(ReplacesEdited ? " with-current" : "")"><label>Original @DescriptionField<textarea readonly rows="7" value="@request.Context.Guidance"></textarea></label>@if (ReplacesEdited) { <label>Current @DescriptionField, replaced when applied<textarea readonly rows="7" value="@Context!.Guidance"></textarea></label> }<label>Suggested @DescriptionField<textarea rows="7" maxlength="12000" @bind="_suggestion" @bind:event="oninput" disabled="@(_busy || _result?.Kind != PromptEnhancementKind.Prompt)"></textarea></label></div>
+            @if (_result is { Kind: not PromptEnhancementKind.Prompt } result) { <p role="status">@result.Text</p> }
+            @if (Superseded is { } superseded) { <p class="field-hint" role="status">@superseded</p> }
+            @if (_savedChanges.Count > 0) { <p class="field-hint">Close this dialog and reload Assets to use the current saved notes.</p> }
+            @if (_raw.Length > 0) { <details><summary>Response details · @(IsVisualDescription ? VisualDescriptionAssistance.Profile : GuidanceAssistant.Profile)</summary><pre>@_raw</pre></details> }
+        }
+        @if (_error is not null) { <p role="alert" class="field-error">@_error</p> }
+    </div>;
+    private RenderFragment ReviewActions => @<text>
+        @if (_request is not null && Superseded is null && Changed is { } changed) { <AssistedApplyWarning Changed="changed" Retry="request a new suggestion" /> }
+        @if (_request is not null) { <MudButton OnClick="ApplySuggestion" Disabled="@(!CanApply)" Color="Color.Primary" Variant="Variant.Filled">@(Changed is null ? "Apply changes" : AssistedApplyWarning.ApplyAnyway)</MudButton> }
+        @if (_active is not null) { <MudButton OnClick="CancelRequest">Cancel suggestion</MudButton> }
+        @if (_pending is not null) { <MudButton OnClick="RetryEnqueue" Disabled="_submitting">Retry saving request</MudButton> }
+        else if (!_busy && _error is not null && Changes.Count == 0 && _job is not null) { <MudButton OnClick="RetryCaptured" Disabled="Disabled">Retry</MudButton> }
+        else if (!_busy) { <MudButton OnClick="Open" Disabled="@(!CanStart)" Variant="Variant.Outlined" Color="Color.Primary">@(_request is null ? "Suggest" : _error is not null && Changes.Count == 0 ? "Retry" : "New suggestion")</MudButton> }
+        <button class="btn-secondary" @ref="_closeButton" @onclick="Close" disabled="@_applying">Close</button>
+    </text>;
+}

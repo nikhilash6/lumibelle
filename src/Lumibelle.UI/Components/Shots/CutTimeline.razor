@@ -1,0 +1,26 @@
+<section class="cut-timeline" aria-label="Cut timeline">
+    <div class="timeline-toolbar">
+        <strong>Sequence <span data-total></span></strong>
+        <div><button type="button" data-zoom="fit" aria-pressed="true">Fit</button><button type="button" data-zoom="out" aria-label="Zoom out">−</button><button type="button" data-zoom="in" aria-label="Zoom in">+</button></div>
+    </div>
+    <div class="timeline-scroll" tabindex="0" aria-label="Scrollable timeline">
+        <div class="timeline-canvas">
+            <div class="timeline-ruler" aria-hidden="true"></div>
+            <div class="timeline-clips"></div>
+            <div class="timeline-playhead" role="slider" tabindex="0" aria-label="Cut position" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0"></div>
+            <div class="timeline-insertion" hidden></div>
+        </div>
+    </div>
+    <div class="timeline-source" aria-label="Selected clip trim strip" hidden>
+        <div class="source-caption"><strong data-source-title></strong><span data-source-range></span></div>
+        <div class="source-strip">
+            <div class="source-thumbnails" aria-hidden="true"></div>
+            <div class="source-excluded start"></div><div class="source-excluded end"></div>
+            <div class="source-retained"></div>
+            <button type="button" class="trim-handle" data-source-edge="start" role="slider" aria-label="Source start frame"></button>
+            <button type="button" class="trim-handle" data-source-edge="end" role="slider" aria-label="Source end frame"></button>
+        </div>
+    </div>
+    <p class="timeline-announcement" role="status" aria-live="polite"></p>
+    <p class="timeline-error" role="alert" hidden></p>
+</section>

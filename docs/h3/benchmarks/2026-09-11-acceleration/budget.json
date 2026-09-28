@@ -1,0 +1,142 @@
+{
+  "TargetSeconds": 7200,
+  "ConsumedSeconds": 4339.680031899999,
+  "Runs": [
+    {
+      "Name": "dialogue-standard-141-01",
+      "Case": "acceleration",
+      "StartedUtc": "2026-09-11T07:06:45.0034498+02:00",
+      "Status": "failed",
+      "Seconds": 8.184155,
+      "ExitCode": 1
+    },
+    {
+      "Name": "dialogue-standard-141-02",
+      "Case": "acceleration",
+      "StartedUtc": "2026-09-11T07:07:46.869338+02:00",
+      "Status": "complete",
+      "Seconds": 412.7477555,
+      "ExitCode": 0
+    },
+    {
+      "Name": "motion-standard-141-r1",
+      "Case": "acceleration",
+      "StartedUtc": "2026-09-11T07:16:49.8269729+02:00",
+      "Status": "complete",
+      "Seconds": 439.16857,
+      "ExitCode": 0
+    },
+    {
+      "Name": "dialogue-turbo4-141-r1",
+      "Case": "acceleration",
+      "StartedUtc": "2026-09-11T07:24:09.6921595+02:00",
+      "Status": "complete",
+      "Seconds": 267.0243394,
+      "ExitCode": 0
+    },
+    {
+      "Name": "motion-turbo4-141-r1",
+      "Case": "acceleration",
+      "StartedUtc": "2026-09-11T07:28:37.2958542+02:00",
+      "Status": "complete",
+      "Seconds": 275.150138,
+      "ExitCode": 0
+    },
+    {
+      "Name": "dialogue-turbo8-141-r1",
+      "Case": "acceleration",
+      "StartedUtc": "2026-09-11T07:33:13.0255572+02:00",
+      "Status": "complete",
+      "Seconds": 307.6442231,
+      "ExitCode": 0
+    },
+    {
+      "Name": "motion-turbo8-141-r1",
+      "Case": "acceleration",
+      "StartedUtc": "2026-09-11T07:38:21.2661982+02:00",
+      "Status": "complete",
+      "Seconds": 320.0090155,
+      "ExitCode": 0
+    },
+    {
+      "Name": "dialogue-sol-141-r1",
+      "Case": "acceleration",
+      "StartedUtc": "2026-09-11T07:43:41.8860845+02:00",
+      "Status": "failed",
+      "Seconds": 79.3958457,
+      "ExitCode": 1
+    },
+    {
+      "Name": "motion-sol-141-r1",
+      "Case": "acceleration",
+      "StartedUtc": "2026-09-11T07:45:01.8732655+02:00",
+      "Status": "failed",
+      "Seconds": 68.8414088,
+      "ExitCode": 1
+    },
+    {
+      "Name": "dialogue-spectrum-141-r1",
+      "Case": "acceleration",
+      "StartedUtc": "2026-09-11T07:46:11.3115041+02:00",
+      "Status": "complete",
+      "Seconds": 348.3525642,
+      "ExitCode": 0
+    },
+    {
+      "Name": "motion-spectrum-141-r1",
+      "Case": "acceleration",
+      "StartedUtc": "2026-09-11T07:52:00.2463863+02:00",
+      "Status": "complete",
+      "Seconds": 366.5841627,
+      "ExitCode": 0
+    },
+    {
+      "Name": "dialogue-cache-141-r1",
+      "Case": "acceleration",
+      "StartedUtc": "2026-09-11T07:58:07.4197196+02:00",
+      "Status": "failed",
+      "Seconds": 127.6005298,
+      "ExitCode": 134
+    },
+    {
+      "Name": "motion-cache-141-r1",
+      "Case": "acceleration",
+      "StartedUtc": "2026-09-11T08:00:15.5979131+02:00",
+      "Status": "failed",
+      "Seconds": 121.4404296,
+      "ExitCode": 134
+    },
+    {
+      "Name": "dialogue-pdd-141-r1",
+      "Case": "acceleration",
+      "StartedUtc": "2026-09-11T08:02:17.659202+02:00",
+      "Status": "complete",
+      "Seconds": 301.8633549,
+      "ExitCode": 0
+    },
+    {
+      "Name": "motion-pdd-141-r1",
+      "Case": "acceleration",
+      "StartedUtc": "2026-09-11T08:07:20.1261216+02:00",
+      "Status": "complete",
+      "Seconds": 309.7347442,
+      "ExitCode": 0
+    },
+    {
+      "Name": "dialogue-larry-141-r1",
+      "Case": "acceleration",
+      "StartedUtc": "2026-09-11T08:12:30.4688165+02:00",
+      "Status": "complete",
+      "Seconds": 290.0992877,
+      "ExitCode": 0
+    },
+    {
+      "Name": "motion-larry-141-r1",
+      "Case": "acceleration",
+      "StartedUtc": "2026-09-11T06:17:21.1830892+00:00",
+      "Status": "complete",
+      "Seconds": 295.8395078,
+      "ExitCode": 0
+    }
+  ]
+}

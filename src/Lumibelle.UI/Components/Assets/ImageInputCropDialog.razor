@@ -1,0 +1,27 @@
+<MudDialog @ref="_dialog" Visible="_visible" Options="@(new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true, CloseOnEscapeKey = false, BackdropClick = false })" Class="image-input-crop-dialog">
+    <TitleContent><DialogHeader Title="@($"Crop {Label}")" CloseLabel="Cancel crop" Close="Cancel" /></TitleContent>
+    <DialogContent>
+        <DialogEscape Pressed="Cancel" />
+        <ImageCropEditor Url="@Url" Width="Width" Height="Height" InitialCrop="InitialCrop" CropChanged="crop => _draft = crop" />
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Apply">Apply crop</MudButton>
+    </DialogActions>
+</MudDialog>
+@code {
+    [Parameter] public string Label { get; set; } = "image";
+    [Parameter] public string Url { get; set; } = "";
+    [Parameter] public int Width { get; set; }
+    [Parameter] public int Height { get; set; }
+    [Parameter] public ImageCropRegion? InitialCrop { get; set; }
+    [Parameter] public EventCallback<ImageCropRegion> Applied { get; set; }
+    [Parameter] public EventCallback Cancelled { get; set; }
+    private MudDialog? _dialog;
+    private bool _visible = true;
+    private ImageCropRegion _draft = new() { X = 0, Y = 0, Width = 1, Height = 1 };
+    protected override void OnInitialized() { if (InitialCrop is { } crop) _draft = crop; }
+    private async Task Close() { _visible = false; if (_dialog is not null) await _dialog.CloseAsync(); }
+    private async Task Cancel() { await Close(); await Cancelled.InvokeAsync(); }
+    private async Task Apply() { await Close(); await Applied.InvokeAsync(_draft); }
+}

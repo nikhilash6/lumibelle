@@ -1,0 +1,87 @@
+@page "/projects/{ProjectKey}"
+@page "/projects/{ProjectKey}/{Section}"
+@inject IProjectRoutes ProjectRoutes
+@inject WorkspacePositions Positions
+@inject NavigationManager Navigation
+
+@if (_error is not null) { <h1>Couldn’t open project</h1><p role="alert">@_error</p><a href="/">Back to projects</a> }
+else if (_missing) { <h1>Project not found</h1><a href="/">Back to projects</a> }
+else if (_ready && _route is not null && _type is not null)
+{
+    <DynamicComponent @key="(_route.ProjectId, _type)" Type="_type" Parameters="_parameters" />
+}
+else { <p role="status">Opening workspace…</p> }
+
+@code {
+    [Parameter] public string ProjectKey { get; set; } = "";
+    [Parameter] public string? Section { get; set; }
+    [SupplyParameterFromQuery] public Guid? AssetId { get; set; }
+    [SupplyParameterFromQuery] public Guid? ImageId { get; set; }
+    [SupplyParameterFromQuery] public Guid? ShotId { get; set; }
+    [SupplyParameterFromQuery] public Guid? TakeId { get; set; }
+    [SupplyParameterFromQuery] public Guid? SetupId { get; set; }
+    [SupplyParameterFromQuery] public Guid? JobId { get; set; }
+    [SupplyParameterFromQuery] public string? View { get; set; }
+    [SupplyParameterFromQuery] public bool Edit { get; set; }
+    private ProjectRoute? _route;
+    private Type? _type;
+    private string? _error, _canonical;
+    private bool _ready, _missing, _interactive, _resolving;
+    private int _version;
+    private IDictionary<string, object> _parameters = new Dictionary<string, object>();
+    public override Task SetParametersAsync(ParameterView parameters)
+    {
+        if (!parameters.TryGetValue<string>(nameof(Section), out _)) Section = null;
+        return base.SetParametersAsync(parameters);
+    }
+    private string Studio => Section?.ToLowerInvariant() is null or "" ? "overview" : Section.ToLowerInvariant() == "production" ? "shots" : Section.ToLowerInvariant();
+    protected override async Task OnParametersSetAsync()
+    {
+        var version = ++_version; var studio = Studio;
+        _canonical = null; _resolving = true;
+        try {
+            var route = await ProjectRoutes.ResolveAsync(ProjectKey);
+            if (version != _version) return;
+            var type = studio switch { "overview" => typeof(ProjectHome), "script" => typeof(ScriptEditor), "assets" => typeof(AssetsStudio), "shots" => typeof(ProductionStudio), "dubs" => typeof(DubbingStudio), "cut" => typeof(CutStudio), "settings" => typeof(ProjectSettings), _ => null };
+            if (_route?.ProjectId != route?.ProjectId || _type != type) _ready = false;
+            _type = type;
+            _missing = route is null || _type is null; _route = route; _error = null;
+            if (_missing) { _ready = false; return; }
+            var uri = Navigation.ToAbsoluteUri(Navigation.Uri);
+            _canonical = ProjectRoutes.Path(route!.ProjectId, studio == "overview" ? "" : "/" + studio) + uri.Query + uri.Fragment;
+            _parameters = Parameters(studio);
+            // Replace aliases before mounting an editor. Otherwise its asynchronous initial load
+            // can run twice when canonical navigation delivers a second parameter set.
+            if (_canonical != uri.PathAndQuery + uri.Fragment) { _ready = false; return; }
+            if (_interactive) { await Positions.LoadAsync(route.ProjectId, studio == "dubs" ? "shots" : studio); if (version == _version) _ready = true; }
+        } catch (Exception e) when (e is ProjectStoreException or WorkspaceStoreException) { if (version == _version) { _error = e.Message; _ready = false; } }
+        finally { if (version == _version) _resolving = false; }
+    }
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        _interactive = true;
+        if (_resolving) return;
+        if (_canonical is { } url) {
+            _canonical = null;
+            if (Navigation.ToAbsoluteUri(Navigation.Uri).PathAndQuery + Navigation.ToAbsoluteUri(Navigation.Uri).Fragment != url) {
+                Navigation.NavigateTo(url, replace: true); return;
+            }
+        }
+        var version = _version;
+        if (!_ready && !_missing && _error is null && _route is not null) {
+            await Positions.LoadAsync(_route.ProjectId, Studio == "dubs" ? "shots" : Studio);
+            if (version != _version) return;
+            _ready = true; StateHasChanged();
+        }
+    }
+    private IDictionary<string, object> Parameters(string studio)
+    {
+        var p = new Dictionary<string, object> { ["Id"] = _route!.ProjectId };
+        if (studio == "script") p["JobId"] = JobId!;
+        if (studio == "dubs") { p["RequestedJobId"] = JobId!; p["RequestedShotId"] = ShotId!; p["RequestedTakeId"] = TakeId!; }
+        if (studio is "assets" or "shots") { p["RequestedJobId"] = JobId!; p["RequestedView"] = View!; }
+        if (studio == "assets") { p["RequestedAssetId"] = AssetId!; p["RequestedImageId"] = ImageId!; p["EditRequestedImage"] = Edit; }
+        if (studio == "shots") { p["RequestedShotId"] = ShotId!; p["RequestedCompositionId"] = SetupId!; }
+        return p;
+    }
+}

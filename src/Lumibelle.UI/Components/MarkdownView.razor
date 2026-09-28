@@ -1,0 +1,3 @@
+@inject lumibelle.Services.Story.MarkdownRenderer Renderer
+<div class="markdown-view">@((MarkupString)Renderer.Render(Text))</div>
+@code { [Parameter] public string Text { get; set; } = ""; }

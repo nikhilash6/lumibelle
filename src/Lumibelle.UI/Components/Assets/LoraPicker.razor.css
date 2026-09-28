@@ -1,0 +1,4 @@
+.lora-panel .lora-row .check-row { display: flex; flex-direction: row; align-items: center; gap: 7px; margin: 0; }
+.lora-panel .lora-row .check-row input { flex: 0 0 auto; width: auto; margin: 0; }
+.lora-panel .lora-picker-heading label { margin: 0; }
+.lora-panel ::deep .lora-autocomplete input { border: 0; background: transparent; margin: 0; font-size: var(--lumi-font-size-compact); padding: 10px 12px; }

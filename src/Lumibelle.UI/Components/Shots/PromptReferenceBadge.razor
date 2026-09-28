@@ -1,0 +1,8 @@
+@using lumibelle.Services.Production
+@if (Check.NeedsAttention)
+{
+    <small class="prompt-reference-badge" data-prompt-state="@Check.State" title="@Check.Detail">@Check.Label</small>
+}
+@code {
+    [Parameter, EditorRequired] public PromptReferenceCheck Check { get; set; } = new(PromptReferenceState.Current, "");
+}

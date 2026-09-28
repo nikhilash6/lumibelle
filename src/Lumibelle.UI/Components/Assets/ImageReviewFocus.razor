@@ -1,0 +1,14 @@
+@inject IJSRuntime JS
+@code {
+    [Parameter] public string? Target { get; set; }
+    [Parameter] public EventCallback Handled { get; set; }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // Run inside the dialog content, after MudDialog has mounted its fields.
+        if (Target is not { } label) return;
+        try { await JS.InvokeVoidAsync("lumibelleAssets.focusReview", label); }
+        catch (Exception e) when (e is JSException or JSDisconnectedException) { }
+        await Handled.InvokeAsync();
+    }
+}

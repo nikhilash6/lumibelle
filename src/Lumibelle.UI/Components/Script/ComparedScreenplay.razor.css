@@ -1,0 +1,4 @@
+.change-label { margin: 0 0 4px; font: var(--lumi-font-size-meta)/1.5 var(--lumi-font-ui); color: var(--lumi-text-muted); }
+.comparison-block:not([data-change=Unchanged]) { border-inline-start: 2px solid var(--lumi-border); padding-inline-start: 9px; margin-inline-start: -11px; }
+del { background: var(--lumi-diff-removed); color: var(--lumi-diff-removed-text); text-decoration: line-through; text-decoration-thickness: 1px; }
+ins { background: var(--lumi-diff-added); color: var(--lumi-diff-added-text); text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 3px; }

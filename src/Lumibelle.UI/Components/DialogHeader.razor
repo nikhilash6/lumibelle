@@ -1,0 +1,36 @@
+@* The shared dialog heading: optional context above the title, an optional summary below it, optional tools, and a close button. *@
+@inject IJSRuntime JS
+<div class="dialog-header">
+    <div class="dialog-heading-text">
+        @if (!string.IsNullOrWhiteSpace(Context)) { <p class="eyebrow">@Context</p> }
+        <h2 id="@_headingId" @ref="_heading">@Title</h2>
+        @if (Summary is not null) { <p class="dialog-summary" id="@_summaryId" @ref="_summary">@Summary</p> }
+    </div>
+    @if (ChildContent is not null) { <div class="dialog-header-tools">@ChildContent</div> }
+    @if (Close.HasDelegate) { <MudIconButton Class="dialog-close" Icon="@Icons.Material.Outlined.Close" aria-label="@CloseLabel" Disabled="CloseDisabled" OnClick="Close" /> }
+</div>
+@code {
+    [Parameter, EditorRequired] public string Title { get; set; } = "";
+    [Parameter] public string? Context { get; set; }
+    [Parameter] public RenderFragment? Summary { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+    [Parameter] public EventCallback Close { get; set; }
+    [Parameter] public string CloseLabel { get; set; } = "Close dialog";
+    [Parameter] public bool CloseDisabled { get; set; }
+    private readonly string _headingId = $"dialog-heading-{Guid.NewGuid():N}", _summaryId = $"dialog-summary-{Guid.NewGuid():N}";
+    private ElementReference _heading, _summary;
+    private bool? _labelledWithSummary;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        var withSummary = Summary is not null;
+        if (_labelledWithSummary == withSummary) return;
+        _labelledWithSummary = withSummary;
+        try
+        {
+            await using var module = await JS.InvokeAsync<IJSObjectReference>("import", lumibelle.UiAssets.Module("dialog-label.js"));
+            await module.InvokeVoidAsync("label", _heading, withSummary ? _summary : null);
+        }
+        catch (Exception e) when (e is JSDisconnectedException or OperationCanceledException) { }
+    }
+}

@@ -1,0 +1,362 @@
+{
+  "MiniMaxH3TurboSampler": {
+    "input": {
+      "required": {}
+    },
+    "output": [
+      "SAMPLER"
+    ]
+  },
+  "MiniMaxH3TurboLoRA": {
+    "input": {
+      "required": {
+        "model": [
+          "MODEL"
+        ],
+        "lora_name": [
+          [
+            "minimax_h3_turbo_v4_step600_ema.safetensors"
+          ]
+        ],
+        "strength": [
+          "FLOAT",
+          {
+            "default": 1.0,
+            "min": -10.0,
+            "max": 10.0,
+            "step": 0.01
+          }
+        ],
+        "low_vram": [
+          "BOOLEAN",
+          {
+            "default": false,
+            "label_on": "merge (low VRAM, softer)",
+            "label_off": "bypass (sharp, more VRAM)"
+          }
+        ]
+      }
+    },
+    "output": [
+      "MODEL"
+    ]
+  },
+  "MiniMaxH3PDDAccApply": {
+    "input": {
+      "required": {
+        "model": [
+          "MODEL"
+        ],
+        "pdd_file": [
+          [
+            "MiniMax-H3-Ref2VA-Acc-8Step.safetensors"
+          ],
+          {}
+        ],
+        "nfe": [
+          [
+            "8",
+            "4",
+            "6"
+          ],
+          {
+            "default": "8"
+          }
+        ],
+        "lora_strength": [
+          "FLOAT",
+          {
+            "default": 1.0,
+            "min": -2.0,
+            "max": 2.0,
+            "step": 0.01
+          }
+        ],
+        "head_strength": [
+          "FLOAT",
+          {
+            "default": 1.0,
+            "min": 0.0,
+            "max": 2.0,
+            "step": 0.01
+          }
+        ],
+        "on_off_grid": [
+          [
+            "error",
+            "clamp"
+          ],
+          {
+            "default": "error"
+          }
+        ]
+      },
+      "optional": {
+        "partition": [
+          "STRING",
+          {
+            "default": ""
+          }
+        ],
+        "enabled": [
+          "BOOLEAN",
+          {
+            "default": true
+          }
+        ],
+        "bypass_sigmas": [
+          "SIGMAS",
+          {}
+        ],
+        "partition_check": [
+          [
+            "error",
+            "warn",
+            "off"
+          ],
+          {
+            "default": "error"
+          }
+        ]
+      }
+    },
+    "output": [
+      "MODEL",
+      "SIGMAS",
+      "STRING"
+    ]
+  },
+  "SpectrumApplyMiniMaxH3": {
+    "input": {
+      "required": {
+        "model": [
+          "MODEL"
+        ],
+        "enabled": [
+          "BOOLEAN",
+          {
+            "default": true
+          }
+        ],
+        "blend_weight": [
+          "FLOAT",
+          {
+            "default": 0.5,
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.01
+          }
+        ],
+        "degree": [
+          "INT",
+          {
+            "default": 1,
+            "min": 1,
+            "max": 16,
+            "step": 1
+          }
+        ],
+        "ridge_lambda": [
+          "FLOAT",
+          {
+            "default": 0.1,
+            "min": 0.0,
+            "max": 10.0,
+            "step": 0.01
+          }
+        ],
+        "window_size": [
+          "FLOAT",
+          {
+            "default": 2.0,
+            "min": 1.0,
+            "max": 16.0,
+            "step": 0.05
+          }
+        ],
+        "flex_window": [
+          "FLOAT",
+          {
+            "default": 0.75,
+            "min": 0.0,
+            "max": 8.0,
+            "step": 0.05
+          }
+        ],
+        "warmup_steps": [
+          "INT",
+          {
+            "default": 1,
+            "min": 0,
+            "max": 64,
+            "step": 1
+          }
+        ],
+        "tail_actual_steps": [
+          "INT",
+          {
+            "default": 1,
+            "min": 0,
+            "max": 64,
+            "step": 1
+          }
+        ],
+        "max_history": [
+          "INT",
+          {
+            "default": 8,
+            "min": 2,
+            "max": 64,
+            "step": 1
+          }
+        ],
+        "debug": [
+          "BOOLEAN",
+          {
+            "default": false
+          }
+        ]
+      },
+      "optional": {
+        "history_storage": [
+          [
+            "system_ram",
+            "vram"
+          ],
+          {
+            "default": "system_ram"
+          }
+        ],
+        "bootstrap_first_forecast": [
+          "BOOLEAN",
+          {
+            "default": true
+          }
+        ],
+        "anchor_residual_feedback": [
+          "BOOLEAN",
+          {
+            "default": false
+          }
+        ],
+        "selective_rollback_correction": [
+          "BOOLEAN",
+          {
+            "default": false
+          }
+        ],
+        "offline_smoothing_replay": [
+          "BOOLEAN",
+          {
+            "default": true
+          }
+        ],
+        "audio_blend_weight": [
+          "FLOAT",
+          {
+            "default": 0.0,
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.01
+          }
+        ],
+        "offline_archive_storage": [
+          [
+            "system_ram",
+            "vram"
+          ],
+          {
+            "default": "system_ram"
+          }
+        ],
+        "model_aware_mode": [
+          [
+            "off",
+            "schedule",
+            "schedule_confidence",
+            "full"
+          ],
+          {
+            "default": "off"
+          }
+        ],
+        "model_aware_risk_threshold": [
+          "FLOAT",
+          {
+            "default": 0.65,
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.01
+          }
+        ],
+        "model_aware_trust_shrinkage": [
+          "BOOLEAN",
+          {
+            "default": false
+          }
+        ],
+        "model_aware_replay_generic_correction": [
+          "BOOLEAN",
+          {
+            "default": false
+          }
+        ],
+        "generic_correction_mode": [
+          [
+            "legacy",
+            "coordinate_rls",
+            "coordinate_rls_reliability",
+            "regional"
+          ],
+          {
+            "default": "coordinate_rls"
+          }
+        ],
+        "generic_correction_limiter": [
+          [
+            "rational",
+            "hard_clip",
+            "tanh"
+          ],
+          {
+            "default": "hard_clip"
+          }
+        ],
+        "generic_correction_limit": [
+          "FLOAT",
+          {
+            "default": 0.4,
+            "min": 0.01,
+            "max": 1.0,
+            "step": 0.01
+          }
+        ],
+        "generic_correction_attenuation": [
+          [
+            "mode_default",
+            "no_attenuation",
+            "general_confidence",
+            "correction_reliability",
+            "combined_conservative"
+          ],
+          {
+            "default": "no_attenuation"
+          }
+        ],
+        "sa_pece_forecast_policy": [
+          [
+            "max_speed",
+            "balanced",
+            "stable_start"
+          ],
+          {
+            "default": "balanced"
+          }
+        ]
+      }
+    },
+    "output": [
+      "MODEL"
+    ]
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "larry": {
+    "strength": 1.0,
+    "low_vram": false,
+    "lora_name": "minimax_h3_turbo_v4_step600_ema.safetensors"
+  },
+  "pdd": {
+    "nfe": "8",
+    "lora_strength": 1.0,
+    "head_strength": 1.0,
+    "on_off_grid": "error",
+    "partition": "",
+    "enabled": true,
+    "partition_check": "error",
+    "pdd_file": "MiniMax-H3-Ref2VA-Acc-8Step.safetensors"
+  },
+  "spectrum": {
+    "enabled": true,
+    "blend_weight": 0.5,
+    "degree": 1,
+    "ridge_lambda": 0.1,
+    "window_size": 2.0,
+    "flex_window": 0.75,
+    "warmup_steps": 1,
+    "tail_actual_steps": 1,
+    "max_history": 8,
+    "debug": true,
+    "history_storage": "system_ram",
+    "bootstrap_first_forecast": true,
+    "anchor_residual_feedback": false,
+    "selective_rollback_correction": false,
+    "offline_smoothing_replay": true,
+    "audio_blend_weight": 0.0,
+    "offline_archive_storage": "system_ram",
+    "model_aware_mode": "off",
+    "model_aware_risk_threshold": 0.65,
+    "model_aware_trust_shrinkage": false,
+    "model_aware_replay_generic_correction": false,
+    "generic_correction_mode": "coordinate_rls",
+    "generic_correction_limiter": "hard_clip",
+    "generic_correction_limit": 0.4,
+    "generic_correction_attenuation": "no_attenuation",
+    "sa_pece_forecast_policy": "balanced"
+  }
+}

@@ -1,0 +1,148 @@
+@using lumibelle.Models
+@using lumibelle.Services.Assets
+@using lumibelle.Services.Story
+
+@if (!ReferenceReels.IsEnvironment(Draft) && Draft.VoiceMode != ReelVoiceMode.Silent)
+{
+    <section class="reel-speech" aria-label="Character speech settings">
+        <div class="reel-speech-controls">
+            <label>Spoken language<select aria-label="Spoken language" value="@LanguageKey" @onchange="ChangeLanguage" disabled="@Disabled">
+                @foreach (var language in ReelSpeech.Languages)
+                {
+                    <option value="@language.Name">@language.Name@(language.NativeName == language.Name ? "" : $" · {language.NativeName}")@(language.UpstreamStable ? "" : " · Experimental")</option>
+                }
+                <option value="other">Other…</option>
+            </select></label>
+            @if (LanguageKey == "other")
+            {
+                <label>Other spoken language<input aria-label="Other spoken language" dir="auto" maxlength="100" value="@Draft.Language" @oninput="ChangeOtherLanguage" disabled="@Disabled" /></label>
+            }
+            <label>Sample passage<select aria-label="Sample passage" value="@Preset" @onchange="ChangePreset" disabled="@Disabled">
+                <option value="@ReelSpeechPreset.CustomText">Custom text</option>
+                <option value="@ReelSpeechPreset.ConversationalRange">Conversational range</option>
+            </select></label>
+        </div>
+        <p class="speech-hint">Scene-description prose stays English. Spoken language applies to the exact dialogue below.</p>
+        <p class="speech-hint speech-support">@ReelSpeech.SupportNotice(Draft.Language)
+            <a href="@ReelSpeech.SupportSource" target="_blank" rel="noopener noreferrer">Upstream language documentation</a>
+        </p>
+        @if (Preset == ReelSpeechPreset.ConversationalRange)
+        {
+            <label>Passage length<select aria-label="Passage length" value="@(Draft.Speech?.Length ?? ReelSpeechLength.Automatic)" @onchange="ChangeLength" disabled="@Disabled">
+                @foreach (var length in Enum.GetValues<ReelSpeechLength>())
+                {
+                    <option value="@length">@ReelSpeech.LengthLabel(length)</option>
+                }
+            </select></label>
+            <p class="speech-hint">A statement, a question, restrained emphasis and a settled closing. No exaggerated voice changes.</p>
+            @if (Suggestion is { } suggestion)
+            {
+                <div class="speech-suggestion">
+                    <strong>Suggested passage · @ReelSpeech.LengthLabel(suggestion.Length)</strong>
+                    <p class="speech-hint">For a @(suggestion.GeneratedSeconds.ToString("0.###"))-second generated clip. Authored wording, not a measured recording; leave room to start and finish naturally.</p>
+                    <p class="speech-text" aria-label="Suggested passage" lang="@LanguageCode" dir="auto">@suggestion.Text</p>
+                    @if (ReelSpeech.NominalSeconds(suggestion.Length) > suggestion.GeneratedSeconds)
+                    {
+                        <p class="speech-hint" role="status">This passage is intended for a longer clip. Choose a shorter version, extend the clip, or shorten the exact dialogue.</p>
+                    }
+                    <button type="button" @onclick="() => UsePassage(suggestion)" disabled="@(Disabled || suggestion.Text == Draft.Line)">Use suggested passage</button>
+                </div>
+            }
+            else
+            {
+                <p class="speech-hint" role="status">@SuggestionIssue</p>
+            }
+            <p class="speech-hint">Language and duration changes update only the suggestion. Your exact dialogue is replaced only by Use suggested passage.</p>
+        }
+        <label>Exact dialogue<textarea aria-label="Exact dialogue" lang="@LanguageCode" dir="auto" rows="3" maxlength="10000" value="@Draft.Line" @oninput="ChangeLine" disabled="@Disabled"></textarea></label>
+        <p class="speech-hint">Editable in every mode. Compose or revise the prompt pair after changing speech settings; existing prompt text is not rewritten here.</p>
+        @if (_notice is not null) { <p class="speech-hint" role="status">@_notice</p> }
+        @if (_error is not null) { <p class="speech-error" role="alert">@_error</p> }
+    </section>
+}
+
+@code {
+    [Parameter, EditorRequired] public ReferenceReelDraft Draft { get; set; } = null!;
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public EventCallback Changed { get; set; }
+    private Guid _draftId;
+    private bool _otherLanguage;
+    private string? _notice, _error;
+    private bool CanEdit => !Disabled && !ReferenceReels.IsEnvironment(Draft) && Draft.VoiceMode != ReelVoiceMode.Silent;
+    private ReelSpeechPreset Preset => Draft.Speech?.Preset ?? ReelSpeechPreset.CustomText;
+    private string LanguageKey => _otherLanguage ? "other" : ReelSpeech.FindLanguage(Draft.Language)?.Name ?? "other";
+    private string? LanguageCode => ReelSpeech.FindLanguage(Draft.Language)?.Code;
+    private ReelSpeechSuggestion? Suggestion
+    {
+        get { try { return ReelSpeech.Suggest(Draft); } catch (WorkspaceStoreException) { return null; } }
+    }
+    private string SuggestionIssue
+    {
+        get
+        {
+            try { ReelSpeech.Suggest(Draft); }
+            catch (WorkspaceStoreException e) { return e.Message; }
+            return ReelSpeech.FindLanguage(Draft.Language) is null
+                ? "No built-in passage for this language. Enter your own exact dialogue; it will not be translated or replaced with English."
+                : "Built-in passages start at about five seconds. Use fewer custom words for this short clip or increase its duration.";
+        }
+    }
+    protected override void OnParametersSet()
+    {
+        if (_draftId == Draft.Id) return;
+        _draftId = Draft.Id; _otherLanguage = false; _notice = _error = null;
+    }
+    private async Task NotifyChanged()
+    {
+        Draft.CheckedInputs = null; _notice = _error = null;
+        await Changed.InvokeAsync();
+    }
+    private async Task ChangeLanguage(ChangeEventArgs e)
+    {
+        if (!CanEdit) return;
+        if (e.Value?.ToString() == "other") { _otherLanguage = true; _notice = _error = null; return; }
+        var language = ReelSpeech.Languages.FirstOrDefault(l => l.Name == e.Value?.ToString());
+        if (language is null) return;
+        _otherLanguage = false;
+        if (Draft.Language == language.Name) return;
+        Draft.Language = language.Name; await NotifyChanged();
+    }
+    private async Task ChangeOtherLanguage(ChangeEventArgs e)
+    {
+        if (!CanEdit || LanguageKey != "other") return;
+        var text = e.Value?.ToString() ?? "";
+        if (text.Length > 100 || Draft.Language == text) return;
+        Draft.Language = text; await NotifyChanged();
+    }
+    private async Task ChangePreset(ChangeEventArgs e)
+    {
+        if (!CanEdit || !Enum.TryParse<ReelSpeechPreset>(e.Value?.ToString(), out var preset) || !Enum.IsDefined(preset) || preset == Preset) return;
+        Draft.Speech = (Draft.Speech ?? new()) with { Preset = preset };
+        await NotifyChanged();
+    }
+    private async Task ChangeLength(ChangeEventArgs e)
+    {
+        if (!CanEdit || Preset != ReelSpeechPreset.ConversationalRange ||
+            !Enum.TryParse<ReelSpeechLength>(e.Value?.ToString(), out var length) || !Enum.IsDefined(length) || length == Draft.Speech?.Length) return;
+        Draft.Speech = (Draft.Speech ?? new()) with { Length = length };
+        await NotifyChanged();
+    }
+    private async Task ChangeLine(ChangeEventArgs e)
+    {
+        if (!CanEdit) return;
+        var text = e.Value?.ToString() ?? "";
+        if (text.Length > 10000 || text == Draft.Line) return;
+        Draft.Line = text; await NotifyChanged();
+    }
+    private async Task UsePassage(ReelSpeechSuggestion suggestion)
+    {
+        if (!CanEdit) return;
+        try
+        {
+            if (!ReelSpeech.UseSuggestion(Draft, suggestion)) return;
+            await Changed.InvokeAsync();
+            _error = null; _notice = "Suggested words applied. Compose or revise the prompt pair to use this dialogue.";
+        }
+        catch (WorkspaceStoreException e) { _error = e.Message; }
+    }
+}

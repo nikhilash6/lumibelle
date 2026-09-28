@@ -1,0 +1,17 @@
+{
+  "performance": {
+    "attention": "ServerDefault",
+    "solAttention": false,
+    "archiveCompression": "Fast"
+  },
+  "model": "minimax_h3_ref2va_pruned_w4a8_mixed.safetensors",
+  "encoder": "qwen3vl_32b_minimax_h3-w4a8_convrot.safetensors",
+  "videoVae": "minimax_h3_video_vae_int8_convrot.safetensors",
+  "audioVae": "minimax_h3_audio_vae_fp32.safetensors",
+  "turboLora": "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
+  "turbo8StepLora": "minimax_h3_ref2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors",
+  "timeoutSeconds": 7200,
+  "ffmpeg": "ffmpeg",
+  "ffprobe": "ffprobe",
+  "latentUpscaler": "minimax_h3_latent_upscaler_3d_fp16.safetensors"
+}

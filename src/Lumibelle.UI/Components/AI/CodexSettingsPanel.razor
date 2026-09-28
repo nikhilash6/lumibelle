@@ -1,0 +1,46 @@
+@inject IServiceProvider Services
+<form class="settings-card" @onsubmit="SaveAsync" @onsubmit:preventDefault>
+    <div class="settings-card-title"><span class="provider-badge">LOCAL CLI</span><h2>Codex</h2></div>
+    <p>Use your installed Codex CLI for text and images, with the account it's set up with. A ChatGPT sign-in shares your plan's allowance; an API key, Amazon Bedrock or another configured provider is billed to that account.</p>
+    <label class="check-row"><input type="checkbox" @bind="_enabled" disabled="@(Busy || _checking)" />Enable Codex</label>
+    <label for="codex-executable">Executable path (optional)</label><input id="codex-executable" @bind="_path" placeholder="Detect installed codex automatically" disabled="@(Busy || _checking)" />
+    <label for="codex-concurrency">Concurrent requests</label><input id="codex-concurrency" type="number" min="1" max="4" step="1" @bind="_concurrency" disabled="@(Busy || _checking)" />
+    <MudButton OnClick="CheckAsync" Disabled="@(Busy || _checking || !_enabled)" Variant="Variant.Outlined">Check connection</MudButton>
+    @if (_checking) { <p role="status">Checking the CLI, account and capabilities…</p> }
+    @if (_check is { } check)
+    {
+        <p role="status">@check.Message</p>
+        @if (check.Success)
+        {
+            <dl><dt>CLI version</dt><dd>@check.Version</dd><dt>Signed-in account</dt><dd>@(check.AccountLabel ?? "Account name not reported")</dd><dt>Allowance</dt><dd>@(check.ReportsAllowance ? "ChatGPT plan allowance, shown below" : "Not reported for this sign-in")</dd><dt>Image generation</dt><dd>@(check.ImageGeneration ? "Supported by this CLI" : "Not available in this CLI") <HelpHint Label="Image generation capability" Text="This checks whether the CLI reports image-generation support. It does not generate a test image or verify a complete image request." /></dd></dl>
+        }
+    }
+    <CliInstallHint Name="Codex" WindowsCommand="npm install -g @@openai/codex" UnixCommand="curl -fsSL https://chatgpt.com/codex/install.sh | sh" Guide="https://learn.chatgpt.com/codex/cli">
+        <Alternatives>@if (OperatingSystem.IsWindows()) { <span>This uses npm, which needs Node.js.</span> } else { <span>Or use <code>npm install -g @("@")openai/codex</code>.</span> }</Alternatives>
+        <SignIn>Then open a new terminal and run <code>codex login</code> to sign in with ChatGPT or an API key.</SignIn>
+    </CliInstallHint>
+    <p class="field-hint">Requires CLI 0.153.4 or later. Run <code>codex login</code> outside Lumibelle to sign in. Lumibelle never stores your credentials. <a href="https://learn.chatgpt.com/docs/auth" target="_blank" rel="noopener noreferrer">Sign-in instructions</a></p>
+    <div class="settings-section-actions"><MudButton ButtonType="ButtonType.Submit" Disabled="@(Busy || _checking)" Color="Color.Primary" Variant="Variant.Filled">Save Codex connection</MudButton><MudButton OnClick="Reset" Disabled="@(Busy || _checking)">Cancel</MudButton></div>
+    @if (Active) { <CodexUsage Settings="Settings" /> }
+</form>
+@code {
+    [Parameter] public CodexSettings Settings { get; set; } = new();
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public bool Active { get; set; } = true;
+    [Parameter] public Func<CodexSettings, Task<bool>> SaveSettings { get; set; } = null!;
+    private bool _enabled, _checking, _initialized;
+    private int _concurrency = 1;
+    private string _path = "";
+    private CodexConnection? _check;
+    protected override void OnParametersSet() { if (!_initialized) { Reset(); _initialized = true; } }
+    private CodexSettings Draft => Settings with { Enabled = _enabled, ExecutablePath = _path.Trim(), Concurrency = _concurrency };
+    private void Reset() { _enabled = Settings.Enabled; _path = Settings.ExecutablePath; _concurrency = Settings.Concurrency; }
+    private async Task SaveAsync() { if (!Busy && !_checking && await SaveSettings(Draft)) Reset(); }
+    private async Task CheckAsync()
+    {
+        _checking = true;
+        try { _check = await Services.GetRequiredService<ICodexClient>().CheckAsync(Draft); }
+        catch (Exception e) when (e is AiGenerationException or InvalidOperationException) { _check = new(false, e.Message, "", null, null, false, []); }
+        finally { _checking = false; }
+    }
+}

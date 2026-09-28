@@ -1,0 +1,363 @@
+@using lumibelle.Components.AI
+@inject TimeProvider Clock
+@inject IJSRuntime JS
+@if (Session.IsRegional)
+{
+    <RegionalImageReviewDialog Session="Session" Visible="Visible" Closed="Closed" Saved="RegionalSaved" OneMore="OneMore" OneMoreLabel="@OneMoreLabel" OneMoreUnavailable="@OneMoreUnavailable" CancelRequested="CancelRequested" RetryOutput="RetryOutput" />
+}
+else
+{
+<InlineDialog Visible="Visible" VisibleChanged="VisibilityChanged" Options="Options" Class="image-review-dialog media-details-dialog"
+           TitleClass="image-review-title" ContentClass="image-review-content" ActionsClass="image-review-actions">
+    <TitleContent>
+        <div @onkeydown="ReviewKeyDown">
+        <DialogHeader Title="@(Session.IsBatch ? Session.IsEditBatch ? "Review edited takes" : "Review generated takes" : "Image details")" Context="@(Session.IsBatch ? "IMAGE BATCH" : null)" CloseLabel="Close image review" CloseDisabled="_busy" Close="Close">
+            @if (Secondary is not null || Primary?.SourceCrop is not null)
+            {
+                <div class="image-review-toolbar">
+                    @if (Secondary is not null)
+                    {
+                        <div role="group" aria-label="Comparison mode"><button aria-pressed="@Pressed(!_sideBySide)" @onclick="() => _sideBySide = false">Slider</button><button aria-pressed="@Pressed(_sideBySide)" @onclick="() => _sideBySide = true">Side by side</button></div>
+                    }
+                    @if (Primary?.SourceCrop is not null || Secondary?.SourceCrop is not null)
+                    {
+                        <div role="group" aria-label="Image crop view"><button aria-pressed="@Pressed(!_useCrop)" @onclick="() => _useCrop = false">Full images</button><button aria-pressed="@Pressed(_useCrop)" @onclick="() => _useCrop = true">Submitted crops</button></div>
+                    }
+                </div>
+            }
+        </DialogHeader>
+        </div>
+    </TitleContent>
+    <DialogContent>
+        <ImageReviewFocus Target="@_focusAfterRender" Handled="() => _focusAfterRender = null" />
+        <lumibelle.Components.AI.AiResultAcknowledgement Observed="Session.ObservedJobs" MediaByJob="@(Session.ObservedJobs.ToDictionary(j => j.Id, j => j.Batch!.Candidates.Where(c => Session.CompletedCandidates.Contains(c.Number)).Select(c => c.Id).ToArray()))" />
+        <DialogEscape Pressed="EscapeReview" />
+        <div class="review-key-scope" style="display: contents" @onkeydown="ReviewKeyDown">
+        @if (Session.Job is { } job && Queue is not null && (job.LocksTarget || job.State == AiJobState.Running || job.Recovery is AiJobRecovery.RetryOutput or AiJobRecovery.CheckStatus))
+        {
+            <div class="review-live-progress"><AiJobProgressView Job="job" Queue="Queue" Progress="JobProgress" />
+            @if (job.LocksTarget) { <MudButton OnClick="CancelRequested">Cancel remaining</MudButton> }
+            @if (job.Recovery is AiJobRecovery.RetryOutput or AiJobRecovery.CheckStatus)
+            { <MudButton OnClick="RetryOutput">@(job.Recovery == AiJobRecovery.RetryOutput ? "Retry download / save" : "Check remote status")</MudButton> }
+            </div>
+        }
+        else if (Session.IsRunning && Session.Progress is { } progress)
+        {
+            <div class="review-live-progress">
+                <GenerationProgressView Progress="progress" Candidate="Session.CurrentCandidate" CandidateTotal="Session.RequestedCount"
+                    OnCancel="@(Session.CancellationRequested ? default : CancelRequested)" CancelLabel="Cancel remaining" />
+                @if (Session.CancellationRequested) { <span role="status">Cancelling remaining takes…</span> }
+            </div>
+        }
+        @if (Session.Status is not null) { <p class="review-status" role="status">@Session.Status</p> }
+        @if (RequestError is not null) { <p class="review-discard-error" role="alert">@RequestError</p> }
+        <div class="image-review-layout media-details-layout">
+            <section class="image-review-main" aria-label="Image viewer">
+                @if (Primary is { } primary)
+                {
+                    <ImageComparisonViewer PrimaryUrl="@Resolution(primary).MediaUrl" SecondaryUrl="@(Secondary is { } compared ? Resolution(compared).MediaUrl : null)" Primary="primary" PrimaryImage="@Image(primary)"
+                        Secondary="Secondary" SecondaryImage="@(Secondary is { } secondary ? Image(secondary) : null)"
+                        SideBySide="_sideBySide" UseCrop="_useCrop" Unavailable="ImageUnavailable" />
+                }
+                else { <p role="status">@(Session.IsRunning ? "Saved takes will appear here as they arrive." : "No saved takes remain in this batch.")</p> }
+                <div class="review-image-list" role="group" aria-label="Source images and takes">
+                    @foreach (var entry in VisibleEntries)
+                    {
+                        var image = Image(entry);
+                        <div class="review-image-row @(_primary == entry.Reference ? "is-selected" : "")" @key="entry.Reference">
+                            <button class="review-image-select" aria-label="View @entry.Label" aria-pressed="@Pressed(_primary == entry.Reference)" @onclick="() => Select(entry)">
+                                @if (image is not null) { <img data-ai-candidate="@(entry.IsTake ? entry.Reference.ImageId : (Guid?)null)" src="@Resolution(entry).MediaUrl" alt="" loading="lazy" @onerror="() => ImageUnavailable(entry.Reference)" /> }
+                                else { <span class="review-thumbnail-missing">—</span> }
+                                <span><strong>@entry.Label</strong><small title="@Description(entry, image)">@Description(entry, image)</small></span>
+                            </button>
+                            <div class="review-row-actions">
+                                <button class="review-compare-button" aria-label="Compare with @entry.Label" aria-pressed="@Pressed(_secondary == entry.Reference)" disabled="@(_primary == entry.Reference || image is null)" @onclick="() => Compare(entry)">@(_secondary == entry.Reference ? "Stop comparing" : "Compare with")</button>
+                                @if (Session.IsBatch && entry.IsTake)
+                                {
+                                    <button class="review-discard-button" aria-label="Discard @entry.Label" disabled="@(_busy || !CanDiscard(entry))" @onclick="() => LeaveDetails(() => DiscardAsync(entry))">Discard</button>
+                                    @if (image is { IsReference: true } or { IsCover: true }) { <small>Manage approved images in the library.</small> }
+                                }
+                                @if (Resolution(entry).Trash is { } trash)
+                                {
+                                    <span class="review-trash-status">In Trash · @trash.Remaining(Clock.GetUtcNow())</span>
+                                    <button disabled="@(_busy || image is null || !trash.CanRestore(Clock.GetUtcNow()))" @onclick="() => RestoreAsync(trash.Id)">@(entry.Label == "Source" ? "Restore source" : "Restore reference")</button>
+                                }
+                            </div>
+                        </div>
+                    }
+                    @foreach (var candidate in Session.PendingCandidates.Order())
+                    {
+                        <div class="review-image-row review-pending-row" @key="candidate" aria-label="Take @candidate: @PendingLabel(candidate)">
+                            <span class="review-pending-thumbnail" aria-hidden="true">@if (Session.IsRunning && Session.Job?.State != AiJobState.Waiting && !Session.StoppedCandidates.ContainsKey(candidate) && candidate == Session.CurrentCandidate) { <MudProgressCircular Size="Size.Small" Indeterminate="true" /> } else { <span>…</span> }</span>
+                            <span><strong>Take @candidate</strong><small>@PendingLabel(candidate)</small></span>
+                        </div>
+                    }
+                </div>
+                @if (Primary is { } selected && Image(selected) is { } selectedImage)
+                {
+                    <details class="review-image-details" @key="selected.Reference"><summary>Saved metadata · @selected.Label</summary>
+                        <dl><dt>Tags</dt><dd>@(selectedImage.Tags.Count == 0 ? "None" : string.Join(", ", selectedImage.Tags))</dd>
+                            <dt>Source</dt><dd>@selectedImage.Origin · @selectedImage.Width × @selectedImage.Height</dd>
+                            @if (selectedImage.Name is { Length: > 0 } imageName) { <dt>Name</dt><dd>@imageName</dd> }
+                            @if (selectedImage.Source?.Frame is { } frameSource)
+                            {
+                                <dt>Video frame</dt><dd>Frame @(frameSource.FrameIndex + 1) · @frameSource.Timestamp.ToString("0.000") s · @frameSource.Fps fps · @frameSource.Width × @frameSource.Height · @(frameSource.Lossless == false ? "Compressed MP4 source" : "Lossless archive source")</dd>
+                                <dt>Original take</dt><dd>@frameSource.TakeId · shot @frameSource.ShotId</dd>
+                            }
+                            @if (selectedImage.Source?.ReelFrame is { } reelFrame)
+                            {
+                                <dt>Reel frame</dt><dd>@reelFrame.ReelName · Frame @(reelFrame.Frame.Index + 1) · @reelFrame.Frame.Seconds.ToString("0.###") s · @(reelFrame.Lossless ? "Lossless archive source" : "Compressed MP4 source")</dd>
+                            }
+                            @if (selectedImage.Source?.Crop is { } cropSource)
+                            {
+                                <dt>Cropped from</dt><dd>@ReferenceDescription(new(cropSource.AssetId, cropSource.ImageId)) · @cropSource.SourceWidth × @cropSource.SourceHeight</dd>
+                                <dt>Submitted crop</dt><dd>@System.Text.Json.JsonSerializer.Serialize(cropSource.Crop)</dd>
+                            }
+                            <dt>@selectedImage.Origin</dt><dd><time datetime="@selectedImage.CreatedUtc.ToString("O")">@selectedImage.CreatedUtc.ToLocalTime().ToString("d MMMM yyyy, HH:mm")</time></dd>
+                            @if (selectedImage.Generation is { } generation)
+                            {
+                                <dt>Workflow</dt><dd>@generation.Workflow.Label()</dd>
+                                <dt>Prompt</dt><dd>@generation.Prompt</dd>
+                                @if (generation.Codex is { } codex)
+                                {
+                                    <dt>Provider</dt><dd>Codex · CLI @codex.Version</dd><dt>Agent model</dt><dd>@codex.Model · @codex.Effort</dd><dt>Image model</dt><dd>Not reported by Codex</dd>
+                                    @if (codex.Timing is { } timing) { <dt>Timing</dt><dd><CodexImageTimingView @key="selectedImage.Id" Timing="timing" /></dd> }
+                                    <dt>Returned dimensions</dt><dd>@codex.Width × @codex.Height</dd><dt>Requested aspect</dt><dd>@generation.AspectRatio</dd>
+                                    @if (!string.IsNullOrWhiteSpace(codex.RevisedPrompt)) { <dt>Returned revised prompt</dt><dd>@codex.RevisedPrompt</dd> }
+                                }
+                                else { <dt>Seed</dt><dd>@generation.Seed</dd><dt>Steps</dt><dd>@generation.Steps</dd> }
+                                @if (generation.Look is { } look)
+                                {
+                                    <dt>Submitted target look</dt><dd>@look.AssetName · @look.LookName</dd>
+                                    <dt>Character context</dt><dd>@look.IdentityNotes @look.IdentityGuidance</dd>
+                                    <dt>Look context</dt><dd>@look.Description @look.PreservationGuidance</dd>
+                                }
+                                @if (generation.Codex is null) { <dt>Diffusion model</dt><dd>@generation.DiffusionModel</dd><dt>Text encoder</dt><dd>@generation.TextEncoder</dd><dt>VAE</dt><dd>@generation.Vae</dd> }
+                                @foreach (var lora in generation.Loras) { <dt>LoRA · @lora.Reference.Name</dt><dd>@lora.Reference.FileName · strength @lora.Strength</dd> }
+                                @if (generation.Edit is { } edit)
+                                {
+                                    @if (edit.Regional is { } regional) { <dt>Regional edit</dt><dd>@regional.Selection.Mode · @regional.Selection.Width × @regional.Selection.Height original pixels · @regional.EdgeBlend px edge blend</dd> }
+                                    @if (edit.Regional is { Colour: { } colour } coloured)
+                                    {
+                                        <dt>Colour adjustments</dt><dd>@(colour.MatchOriginal ? coloured.ColourMatched ? $"Original colour match · {colour.Strength}%" : "No reliable automatic match" : "Manual only") · Brightness @colour.Brightness · Warmth @colour.Warmth · Tint @colour.Tint</dd>
+                                    }
+                                    <dt>Edited from</dt><dd>@ReferenceDescription(new(edit.SourceAssetId, edit.SourceImageId))</dd>
+                                    @if (generation.Workflow == ImageWorkflow.Krea2)
+                                    {
+                                        <dt>Edit LoRA</dt><dd>@edit.Lora · strength @edit.LoraStrength.ToString("0.##")</dd>
+                                        <dt>Edit controls</dt><dd>@if (edit.BaseReferenceBoost is { } baseBoost) { <span>Base fidelity @baseBoost · Second-reference fidelity @edit.ReferenceBoost</span> } else { <span>Fidelity @edit.ReferenceBoost</span> } · @edit.GroundingPixels px grounding · @edit.FitMode mode</dd>
+                                    }
+                                    @if (edit.References.Count > 1)
+                                    {
+                                        <dt>Reference images</dt><dd><ol class="preview-reference-list">@foreach (var reference in edit.References) { <li>@ReferenceDescription(reference)</li> }</ol></dd>
+                                    }
+                                    @foreach (var referenceLook in edit.ReferenceLooks) { <dt>Submitted reference context · @ReferenceDescription(referenceLook.Reference)</dt><dd>@referenceLook.Context.LookName · @referenceLook.Context.Description @referenceLook.Context.PreservationGuidance</dd> }
+                                    @if (edit.SourceCrop is { } crop) { <dt>Source crop</dt><dd>@FormattableString.Invariant($"{crop.Width*100:0.#}% × {crop.Height*100:0.#}% at {crop.X*100:0.#}%, {crop.Y*100:0.#}%")</dd> }
+                                    @foreach (var item in edit.ReferenceCrops)
+                                    { <dt>Reference crop · @ReferenceDescription(item.Reference)</dt><dd>@FormattableString.Invariant($"{item.Crop.Width*100:0.#}% × {item.Crop.Height*100:0.#}% at {item.Crop.X*100:0.#}%, {item.Crop.Y*100:0.#}%")</dd> }
+                                }
+                            }
+                        </dl>
+                    </details>
+                }
+            </section>
+            <aside class="image-review-inspector" aria-label="Image details">
+                @if (_detailsOpen && _details is { } details)
+                {
+                    <section class="review-metadata-editor" aria-label="Edit image details">
+                        @if (!DetailsAvailable) { <p role="alert">This image was moved or removed. Your draft is kept below for copying.</p> }
+                        <fieldset disabled="@(_busy || !DetailsAvailable)"><legend class="sr-only">Editable image details</legend>
+                            <label>Name<input aria-label="Name" maxlength="240" @bind:get="details.Value.Name" @bind:set="value => ChangeDetails(current => current with { Name = value })" @bind:event="oninput" /></label>
+                            <label>Tags<input @bind:get="details.Value.Tags" @bind:set="value => ChangeDetails(current => current with { Tags = value })" @bind:event="oninput" placeholder="face, outfit: red coat" /></label>
+                            @if (DetailsAsset is { Category: AssetCategory.Character } owner)
+                            {
+                                <label>Image look<select aria-label="Image look" @bind:get="details.Value.LookId" @bind:set="(Guid? value) => ChangeDetails(current => current with { LookId = value })"><option value="">General / unassigned</option>@foreach (var look in owner.Looks.Where(l => !l.Archived || l.Id == details.Value.LookId)) { <option value="@look.Id" disabled="@look.Archived">@look.Name @(look.Archived ? "· Archived" : "")</option> }</select></label>
+                            }
+                        </fieldset>
+                        @if (_detailsError is not null) { <p role="alert">@_detailsError</p> }
+                    </section>
+                }
+                @if (_detailsOpen && _details is { } guidanceDetails)
+                {
+                    <details class="media-details-disclosure" open="@(OpenDescription || RequestedGuidanceId is not null)">
+                        <summary>Visual description</summary>
+                        <fieldset class="media-details-editor" disabled="@(_busy || !DetailsAvailable)">
+                            <label>Visual description <span class="field-hint">(optional)</span><textarea aria-label="Visual description" rows="10" maxlength="12000" @bind:get="guidanceDetails.Value.VisualDescription" @bind:set="value => ChangeDetails(current => current with { VisualDescription = value })" @bind:event="oninput"></textarea></label>
+                            <p class="field-hint">Describe what this exact image shows: identity, outfit, materials, props, setting and visible details. Write it yourself or use AI assistance. Save image details to make it available to shot prompt composition. This describes the full image, not a later shot-specific crop.</p>
+                        </fieldset>
+                        @if (DetailsAvailable && DetailsAsset is { } descriptionAsset && GuidanceContext.From(new(Session.ProjectId, descriptionAsset.Id, GuidanceScope.ImageDescription, ImageId: guidanceDetails.Reference.ImageId), descriptionAsset) is { } descriptionContext)
+                        {
+                            <GuidanceSuggestion @key="(guidanceDetails.Reference, GuidanceScope.ImageDescription)" Embedded="true" Context="@(descriptionContext with { Guidance = guidanceDetails.Value.VisualDescription })" Library="Library" Disabled="_busy" RequestedJobId="RequestedGuidanceId" Apply="value => ChangeDetails(current => current with { VisualDescription = value })" />
+                        }
+                    </details>
+                    <details class="media-details-disclosure" open="@(RequestedGuidanceId is not null)">
+                        <summary>Use guidance</summary>
+                        <fieldset class="media-details-editor" disabled="@(_busy || !DetailsAvailable)">
+                            <label>Use guidance <span class="field-hint">(optional)</span><textarea aria-label="Use guidance" rows="4" maxlength="12000" @bind:get="guidanceDetails.Value.PreservationGuidance" @bind:set="value => ChangeDetails(current => current with { PreservationGuidance = value })" @bind:event="oninput"></textarea></label>
+                            <p class="field-hint">Describe what later shots should preserve from this image, such as clothing, materials or details. Added to the asset and look guidance when composing a matching appearance reference; identity-only references skip it. Leave blank to use the shared guidance.</p>
+                        </fieldset>
+                        @if (DetailsAvailable && DetailsAsset is { } guidanceAsset)
+                        {
+                            <GuidanceSuggestion @key="guidanceDetails.Reference" Embedded="true" Context="@(GuidanceContext.From(new(Session.ProjectId, guidanceAsset.Id, GuidanceScope.Image, ImageId: guidanceDetails.Reference.ImageId), guidanceAsset))" Library="Library" Disabled="_busy" RequestedJobId="RequestedGuidanceId" Apply="value => ChangeDetails(current => current with { PreservationGuidance = value })" />
+                        }
+                    </details>
+                }
+            </aside>
+        </div>
+        @if (_error is not null) { <div class="review-discard-error" role="alert">@_error</div> }
+        @if (_undoTrashId is { } undo)
+        {
+            <div class="review-undo" role="status">@_undoLabel moved to Trash. <button disabled="@_busy" @onclick="() => RestoreAsync(undo)">Undo</button> <a href="/trash">Open Trash</a></div>
+        }
+        </div>
+    </DialogContent>
+    <DialogActions>
+        <div style="display: contents" @onkeydown="ReviewKeyDown">
+        <MediaDetailsActions><Status>
+        @if (_afterDetails is not null) {
+            <span class="review-dirty-prompt" role="alert" aria-label="Unsaved image details">Save your image details before continuing?</span>
+        }
+        else if (_detailsError is not null || DetailsDirty) { <span role="status">@(_detailsError ?? "Unsaved details")</span> }
+        else if (Session.IsRunning) { <span>Closing keeps generation running.</span> }
+        @if (OneMore.HasDelegate && OneMoreUnavailable is not null) { <span role="status">@OneMoreUnavailable</span> }
+        </Status><Tools>
+        @if (_afterDetails is null) {
+        @if (Primary is { } selected && Resolution(selected).State == ReviewImageState.Active && Image(selected) is not null && selected.Reference.AssetId == Session.AssetId)
+        { <MudButton OnClick="() => LeaveDetails(() => EditRequested.InvokeAsync(selected.Reference.ImageId))" Disabled="@(_busy || Generating)">Edit image</MudButton> }
+        @if (OneMore.HasDelegate)
+        {
+            <MudButton OnClick="OneMore" Disabled="@(_busy || OneMoreUnavailable is not null)"
+                StartIcon="@Icons.Material.Outlined.Add" title="@(OneMoreUnavailable ?? "Review another take before queueing")">@OneMoreLabel</MudButton>
+        }
+        @if (_detailsOpen) { <MudButton OnClick="CancelDetails" Disabled="@(_busy || !DetailsDirty)">Reset details</MudButton> }
+        }
+        </Tools><ChildContent>
+        @if (_afterDetails is not null) {
+            <MudButton OnClick="DiscardDetailsAndLeave" Disabled="_busy">Discard changes</MudButton><MudButton OnClick="() => _afterDetails = null" Disabled="_busy">Keep editing</MudButton>
+        } else { <MudButton OnClick="Close" Disabled="_busy" Variant="Variant.Outlined">Close</MudButton> }
+        @if (_detailsOpen) { <MudButton OnClick="SaveDetails" Disabled="@(_busy || !DetailsAvailable || !DetailsDirty)" Variant="Variant.Filled" Color="Color.Primary">@(_busy ? "Saving…" : _afterDetails is not null ? "Save and continue" : "Save details")</MudButton> }
+        </ChildContent></MediaDetailsActions>
+        </div>
+    </DialogActions>
+</InlineDialog>
+
+}
+@code {
+    [Parameter, EditorRequired] public ImageReviewSession Session { get; set; } = null!;
+    [Parameter, EditorRequired] public AssetLibrary Library { get; set; } = null!;
+    [Parameter] public bool Visible { get; set; }
+    [Parameter] public AssetImageReference? InitialSelection { get; set; }
+    [Parameter] public bool Generating { get; set; }
+    [Parameter] public EventCallback Closed { get; set; }
+    [Parameter] public EventCallback CancelRequested { get; set; }
+    [Parameter] public EventCallback RetryOutput { get; set; }
+    [Parameter] public EventCallback<AssetLibrary> RegionalSaved { get; set; }
+    [Parameter] public AiQueueDocument? Queue { get; set; }
+    [Parameter] public AiJobProgress? JobProgress { get; set; }
+    [Parameter] public string? RequestError { get; set; }
+    [Parameter] public EventCallback OneMore { get; set; }
+    [Parameter] public string OneMoreLabel { get; set; } = "One more take";
+    [Parameter] public string? OneMoreUnavailable { get; set; }
+    [Parameter] public EventCallback<Guid> EditRequested { get; set; }
+    [Parameter] public Func<Guid, Task<ImageReviewDiscardResult>> Discard { get; set; } = _ => Task.FromResult(new ImageReviewDiscardResult("Discard is unavailable."));
+    [Parameter] public Func<Guid, Task<string?>> Restore { get; set; } = _ => Task.FromResult<string?>("Restoration is unavailable.");
+    private Guid? _sessionId, _undoTrashId;
+    private string? _undoLabel;
+    private string? _focusAfterRender;
+    private AssetImageReference? _primary, _secondary;
+    private AssetImageReference[] _previousOrder = [];
+    private readonly HashSet<AssetImageReference> _unavailable = [];
+    private bool _sideBySide, _useCrop, _busy, _wasVisible;
+    private string? _error;
+    // Inline MudDialog captures its options when opened. Route Escape through our
+    // current draft state instead of letting the original options dismiss it.
+    private DialogOptions Options => new() { MaxWidth = MaxWidth.ExtraLarge, FullWidth = true, CloseOnEscapeKey = false, BackdropClick = false };
+    private IEnumerable<ImageReviewEntry> VisibleEntries => Session.Entries.Where(e => !e.IsTake || !Session.HiddenTakeIds.Contains(e.Reference.ImageId));
+    private ImageReviewEntry? Primary => VisibleEntries.FirstOrDefault(e => e.Reference == _primary);
+    private ImageReviewEntry? Secondary => VisibleEntries.FirstOrDefault(e => e.Reference == _secondary);
+    private ReviewImageResolution Resolution(ImageReviewEntry entry) => ReviewImageResolution.Resolve(Library, entry);
+    private AssetImage? Image(ImageReviewEntry entry) => _unavailable.Contains(entry.Reference) ? null : Resolution(entry).Image;
+    private bool CanDiscard(ImageReviewEntry entry) => entry.IsTake && Image(entry) is { IsReference: false, IsCover: false, Origin: not AssetImageOrigin.Imported };
+    protected override void OnParametersSet()
+    {
+        if (Session.IsRegional) return;
+        if (_sessionId != Session.Id || Visible && !_wasVisible)
+        {
+            _details = null; _afterDetails = null; _detailsOpen = false; _detailsError = null;
+            _sessionId = Session.Id;
+            _undoTrashId = null; _unavailable.Clear(); _secondary = null;
+            _sideBySide = _useCrop = false; _error = null;
+            _primary = InitialSelection ?? VisibleEntries.FirstOrDefault(e => e.IsTake)?.Reference ?? VisibleEntries.FirstOrDefault()?.Reference;
+            BeginDetails(focusName: OpenDetails);
+            if (OpenDescription) _focusAfterRender = "Visual description";
+        }
+        else if (Primary is null && _primary is not null)
+        {
+            var index = Array.IndexOf(_previousOrder, _primary);
+            _primary = _previousOrder.Skip(index + 1).Concat(_previousOrder.Take(Math.Max(0, index)).Reverse())
+                .FirstOrDefault(r => VisibleEntries.Any(e => e.IsTake && e.Reference == r)) ?? VisibleEntries.FirstOrDefault()?.Reference;
+        }
+        if (Secondary is null || _primary == _secondary) _secondary = null;
+        EnsureDetails();
+        _previousOrder = VisibleEntries.Select(e => e.Reference).ToArray();
+        _wasVisible = Visible;
+    }
+    private Task Select(ImageReviewEntry entry) => LeaveDetails(() => { _primary = entry.Reference; _secondary = null; _useCrop = false; return Task.CompletedTask; });
+    private void Compare(ImageReviewEntry entry)
+    {
+        if (entry.Reference == _primary || Image(entry) is null) return;
+        _secondary = _secondary == entry.Reference ? null : entry.Reference;
+        _useCrop = _secondary is not null && (Primary?.SourceCrop is not null || Secondary?.SourceCrop is not null);
+    }
+    private async Task DiscardAsync(ImageReviewEntry entry)
+    {
+        if (_busy || !CanDiscard(entry)) return;
+        _busy = true; _error = null;
+        var before = VisibleEntries.ToList();
+        var oldIndex = before.FindIndex(e => e.Reference == _primary);
+        var remainingOrder = before.Skip(oldIndex + 1).Concat(before.Take(Math.Max(0, oldIndex)).Reverse())
+            .Where(e => e.IsTake).Select(e => e.Reference).ToArray();
+        try
+        {
+            var result = await Discard(entry.Reference.ImageId);
+            _error = result.Error;
+            if (_error is not null) return;
+            _undoTrashId = result.TrashId;
+            _undoLabel = entry.Label;
+            if (Primary is null)
+                _primary = remainingOrder.FirstOrDefault(r => VisibleEntries.Any(e => e.Reference == r)) ?? VisibleEntries.FirstOrDefault()?.Reference;
+            if (Secondary is null || _secondary == _primary) _secondary = null;
+            if (_secondary is null) _useCrop = false;
+            _focusAfterRender = Primary is { } primary ? $"View {primary.Label}" : "Close image review";
+        }
+        finally { _busy = false; }
+    }
+    private async Task RestoreAsync(Guid trashId)
+    {
+        if (_busy) return;
+        _busy = true; _error = null;
+        try
+        {
+            _error = await Restore(trashId);
+            if (_error is null)
+            {
+                if (_undoTrashId == trashId) _undoTrashId = null;
+                _unavailable.Clear();
+                _focusAfterRender = Primary is { } primary ? $"View {primary.Label}" : "Close image review";
+            }
+        }
+        finally { _busy = false; }
+    }
+    private void ImageUnavailable(AssetImageReference reference) => _unavailable.Add(reference);
+    private string PendingLabel(int candidate) => Session.StoppedCandidates.TryGetValue(candidate, out var stopped) ? stopped : !Session.IsRunning ? Session.WasCancelled ? "Cancelled" : "Not generated" :
+        Session.CancellationRequested ? "Cancelling…" : Session.Job?.State == AiJobState.Waiting ? "Queued" : candidate == Session.CurrentCandidate ? "Generating…" : "Waiting…";
+    private Task Close() => LeaveDetails(() => Closed.InvokeAsync());
+    private Task EscapeReview() => DetailsDirty ? Close() : Closed.InvokeAsync();
+    private Task ReviewKeyDown(KeyboardEventArgs e) => e.Key != "Escape" ? Task.CompletedTask : EscapeReview();
+    // Keep programmatic provider dismissal and the parent synchronized as well.
+    private Task VisibilityChanged(bool visible) => visible ? Task.CompletedTask : DetailsDirty ? Close() : Closed.InvokeAsync();
+    private static string Pressed(bool value) => value ? "true" : "false";
+    private string Description(ImageReviewEntry entry, AssetImage? image) => image is null ? "Image unavailable" :
+        $"{Resolution(entry).AssetName} · {(image.Tags.Count > 0 ? string.Join(", ", image.Tags) : $"{image.Width} × {image.Height}")}";
+    private string ReferenceDescription(AssetImageReference reference) => Description(new(reference, ""), Resolution(new(reference, "")).Image);
+}

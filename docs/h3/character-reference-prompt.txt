@@ -1,0 +1,23 @@
+subject_definitions:
+<Subject 1> is {{CHARACTER_NAME}}, whose facial identity, hairstyle, and facial details come from <Picture 1>, whose body proportions and overall silhouette come from <Picture 2>, and whose outfit, colors, accessories, and clothing details come from <Picture 3>. <Subject 1> is a single consistent speaking character and is the main visible subject throughout the target video.
+
+summary:
+[reference generation] The target video is a square 1:1 character reference clip lasting 5.167 seconds, generated using <Subject 1> as the main reference target. The video is designed to establish <Subject 1>'s appearance, voice, body read, and outfit consistency for later reuse. The shot shows <Subject 1> alone in a neutral studio-like environment with soft even lighting, performing a calm, readable speaking reference action while delivering one short line of dialogue.
+
+retention_analysis:
+<Subject 1> (appears in [Shot 1]): fully_preserved - <Subject 1>'s face, hairstyle, body proportions, outfit design, colors, accessories, and silhouette are preserved closely from the reference pictures. The target video presents <Subject 1> as a clean identity-and-voice reference clip, adding only mild natural motion, slight angle variation, and spoken delivery without changing the core character design.
+
+detailed_description:
+The target video is in a clean, neutral, studio-reference style with soft even lighting, a simple light background, and an unobtrusive presentation intended to clearly establish character identity and voice.
+
+[Shot 1] A single continuous shot shows <Subject 1> alone against a plain neutral studio-like background. The video is square 1:1 and lasts 5.167 seconds. The framing begins as a stable medium-full shot, showing enough of the upper body and outfit to clearly read the silhouette and clothing while keeping the face easily visible. <Subject 1> stands in a relaxed neutral pose, facing the camera frontally with calm natural posture. The expression is gentle and composed.
+
+As the shot continues, the camera makes a very subtle, smooth push-in, while <Subject 1> makes a slight natural shift of weight and a restrained turn of the shoulders and head, moving from a clear frontal view into a mild three-quarter angle. The motion is slow and readable, giving a better sense of facial structure, hairstyle volume, and how the outfit sits on the body. The face remains visible and recognizable at all times. <Subject 1> blinks once and makes one small, natural hand gesture near the torso while speaking. The acting remains understated and utility-focused, with no exaggerated performance, no walking, and no dramatic posing.
+
+Near the end of the shot, the framing becomes slightly closer, ending around a medium or medium-close view so the face is especially clear. <Subject 1> (S1) speaks in a natural, pleasant, conversational voice with calm, clear delivery: <d>[English] I thought we'd take the quiet road home before the rain starts again. All's well that ends well!</d> The dialogue is spoken cleanly and intelligibly, with the voice intended to serve as a future voice-reference anchor. There are no cuts, no other people, no props, no visible text, and no background activity.
+
+overall_soundscape:
+The overall soundscape is quiet and minimal. The only audible elements are <Subject 1>'s clean spoken voice, very subtle natural breathing, and faint incidental clothing movement if any. The environment is otherwise silent and controlled, with no crowd noise, no traffic, no room echo emphasis, and no distracting ambient sounds.
+
+non_diegetic_music:
+There is no non-diegetic music.

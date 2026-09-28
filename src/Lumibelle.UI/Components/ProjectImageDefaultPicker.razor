@@ -1,0 +1,106 @@
+@inject IProjectAiPreferencesStore Preferences
+@inject IAiSettingsStore SettingsStore
+@implements IDisposable
+
+<div class="image-default-picker">
+    <button type="button" class="model-chip" @onclick="OpenAsync" disabled="@(Disabled || _busy || !_interactive)" aria-label="Project image model default" aria-haspopup="dialog" title="@Summary">@ModelLabel <span class="model-source">@SourceLabel</span> ▾</button>
+    @if (_error is not null && !_open) { <p role="alert">@_error</p> }
+</div>
+<AiAssistDialog Visible="_open" VisibleChanged="Close" Title="Project image model">
+    <ChildContent>
+        <p>The default for creating and editing images in this project. You can choose another workflow for an individual request.</p>
+        <label for="@_inputId">Default image model</label>
+        <select id="@_inputId" @bind="_choice" disabled="@(Disabled || _busy || _preferences is null)">
+            <option value="global">Use global default · @_global.Label()</option>
+            @foreach (var workflow in Enum.GetValues<ImageWorkflow>()) { <option value="@workflow">@workflow.Label()</option> }
+        </select>
+        <p class="field-hint">Existing drafts and queued requests keep their selected model. Configure model availability in AI settings.</p>
+        @if (_busy) { <p role="status">@(_saving ? "Saving default…" : "Loading default…")</p> }
+        @if (_error is not null) { <p role="alert">@_error</p> }
+        @if (_preferences is null && !_busy) { <button type="button" @onclick="OpenAsync">Try again</button> }
+    </ChildContent>
+    <Actions>
+        <MudButton OnClick="SaveAsync" Disabled="@(Disabled || _busy || _preferences is null)" Variant="Variant.Filled" Color="Color.Primary">Save default</MudButton>
+    </Actions>
+</AiAssistDialog>
+
+@code {
+    [Parameter] public Guid ProjectId { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public EventCallback<ImageWorkflow> Changed { get; set; }
+    private readonly string _inputId = $"project-image-default-{Guid.NewGuid():N}";
+    private ProjectAiPreferences? _preferences;
+    private ImageWorkflow _global;
+    private Guid? _loaded;
+    private bool _open, _busy, _saving, _disposed, _interactive;
+    private string _choice = "global";
+    private string? _error;
+    private string ModelLabel => _preferences is null ? "Image model" : (_preferences.ImageDefault ?? _global).Label();
+    private string SourceLabel => _preferences is null ? "" : _preferences.ImageDefault is not null ? "Project" : "Global";
+    private string Summary => _preferences is null ? "Project image default" : _preferences.ImageDefault is { } model
+        ? $"Project default · {model.Label()}" : $"Global default · {_global.Label()}";
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_loaded == ProjectId) return;
+        _loaded = ProjectId; _preferences = null; _open = false;
+        await LoadAsync();
+    }
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (firstRender) { _interactive = true; StateHasChanged(); }
+    }
+    private async Task LoadAsync()
+    {
+        var projectId = ProjectId; _busy = true; _error = null;
+        try
+        {
+            var preferences = await Preferences.LoadAsync(projectId);
+            var settings = await SettingsStore.LoadAsync();
+            if (_disposed || projectId != ProjectId) return;
+            _preferences = preferences; _global = settings.DefaultImageWorkflow;
+            _choice = preferences.ImageDefault?.ToString() ?? "global";
+        }
+        catch (Exception e) when (e is WorkspaceStoreException or ProjectStoreException)
+        { if (!_disposed && projectId == ProjectId) { _preferences = null; _error = e.Message; } }
+        finally { if (!_disposed && projectId == ProjectId) _busy = false; }
+    }
+    private async Task OpenAsync()
+    {
+        if (Disabled || _busy) return;
+        _open = true; await LoadAsync();
+    }
+    private void Close(bool visible) { if (!_saving) _open = visible; }
+    private async Task SaveAsync()
+    {
+        if (Disabled || _busy || _preferences is null) return;
+        ImageWorkflow? choice = null;
+        if (_choice != "global")
+        {
+            if (!Enum.TryParse<ImageWorkflow>(_choice, out var workflow) || !Enum.IsDefined(workflow)) return;
+            choice = workflow;
+        }
+        var projectId = ProjectId; var revision = _preferences.ImageDefaultRevision;
+        _busy = _saving = true; _error = null;
+        try
+        {
+            var saved = await Preferences.SetImageDefaultAsync(projectId, choice, revision);
+            if (_disposed || projectId != ProjectId) return;
+            _preferences = saved; _open = false;
+            await Changed.InvokeAsync(saved.ImageDefault ?? _global);
+        }
+        catch (WorkspaceConflictException)
+        {
+            var draft = _choice;
+            await LoadAsync();
+            if (!_disposed && projectId == ProjectId)
+            {
+                _choice = draft;
+                _error = _preferences is null ? _error : $"The default changed in another tab ({Summary}). Review your choice and save again.";
+            }
+        }
+        catch (Exception e) when (e is WorkspaceStoreException or ProjectStoreException)
+        { if (!_disposed && projectId == ProjectId) _error = e.Message; }
+        finally { if (!_disposed && projectId == ProjectId) _busy = _saving = false; }
+    }
+    public void Dispose() => _disposed = true;
+}

@@ -1,0 +1,57 @@
+@inject TimeProvider Clock
+<div class="compact-generation-progress" aria-label="Generation progress">
+    <div class="generation-progress-copy">
+        <span class="generation-progress-label" role="status" aria-live="polite" aria-atomic="true">@(HideActivityLabel ? "Generation progress" : Progress.Label)</span>
+        <span class="generation-progress-meta" aria-hidden="true">@Details</span>
+    </div>
+    <MudProgressLinear Class="generation-progress-bar"
+                       Indeterminate="@(!Progress.IsDeterminate)"
+                       Value="@Progress.Percentage"
+                       Color="Color.Primary"
+                       Rounded="true"
+                       Size="Size.Small"
+                       aria-label="@ProgressLabel" />
+    @if (!Progress.LiveUpdatesAvailable)
+    {
+        <p class="generation-progress-fallback">Live details are unavailable. Lumibelle is still waiting for this result.</p>
+    }
+    @if (OnCancel.HasDelegate)
+    {
+        <MudButton OnClick="OnCancel" Size="Size.Small">@CancelLabel</MudButton>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public GenerationProgress Progress { get; set; } = null!;
+    [Parameter] public int? Candidate { get; set; }
+    [Parameter] public int? CandidateTotal { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+    [Parameter] public string CancelLabel { get; set; } = "Cancel";
+    [Parameter] public bool HideActivityLabel { get; set; }
+
+    private string ProgressLabel => Progress.IsDeterminate
+        ? $"{Progress.Label}, {Math.Round(Progress.Percentage):0} percent"
+        : Progress.Label;
+
+    private string Details
+    {
+        get
+        {
+            var values = new List<string>();
+            if (Candidate is not null && CandidateTotal is > 1)
+                values.Add($"Candidate {Candidate} of {CandidateTotal}");
+            if (Progress.IsDeterminate)
+                values.Add($"{FormatNumber(Progress.Current!.Value)} / {FormatNumber(Progress.Maximum!.Value)}{(string.IsNullOrWhiteSpace(Progress.Unit) ? "" : " " + Progress.Unit)}");
+            else if (Progress.Current is { } received)
+                values.Add($"{FormatNumber(received)}{(string.IsNullOrWhiteSpace(Progress.Unit) ? "" : " " + Progress.Unit)} received");
+            values.Add($"{ProgressTiming.Duration(Progress.Elapsed)} elapsed");
+            if (ProgressTiming.Estimate(Progress, Clock.GetUtcNow()) is { } estimate) values.Add(estimate);
+            return string.Join(" · ", values);
+        }
+    }
+
+    private static string FormatNumber(double value) => Math.Abs(value - Math.Round(value)) < 0.001
+        ? Math.Round(value).ToString("N0", System.Globalization.CultureInfo.InvariantCulture)
+        : value.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+
+}

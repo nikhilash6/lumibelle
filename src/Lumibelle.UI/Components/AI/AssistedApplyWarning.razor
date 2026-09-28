@@ -1,0 +1,10 @@
+@* Shown when an assisted prompt's inputs changed since it was requested; the review's
+   primary action becomes Apply anyway (see AssistedApply). It appears after Apply is
+   pressed, so reviews place it in their footer, above that button. *@
+<MudAlert Severity="Severity.Warning" Dense="true" Class="assisted-apply-warning"><span role="alert">@Changed.Message</span> Apply anyway to use it, or discard it and @Retry. @Consequence</MudAlert>
+@code {
+    public const string ApplyAnyway = "Apply anyway";
+    [Parameter, EditorRequired] public AssistedInputsChangedException Changed { get; set; } = default!;
+    [Parameter] public string Retry { get; set; } = "compose again";
+    [Parameter] public string Consequence { get; set; } = "";
+}

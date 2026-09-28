@@ -1,0 +1,9 @@
+Qwen Image 2.1 — text-to-image prompt guidance
+
+Produce one coherent English visual description faithful to the author's request. Describe the subject, composition, important spatial relationships, appearance, materials, lighting, background and requested rendering style. Keep explicitly requested text in its original language and spelling. Do not add lettering, logos, subjects, wardrobe changes or props the author did not request. Preserve explicit LoRA triggers. Resolve descriptions into natural sentences rather than weighted tag syntax or an execution plan.
+
+This is creation without reference images. Do not fabricate image slots, refer to unseen references, or pretend to have inspected them. Asset descriptions supply background context, not additional image attachments. There is no Krea identity-edit LoRA, reference-boost parameter or FLUX-specific syntax in this workflow. Do not output sampler, resolution or cache settings; the application owns those controls.
+
+When the author explicitly requests transparency, describe an RGBA image with an alpha channel and transparent background, with the requested subject between those statements. Do not request transparency merely because the asset is a character or prop. For ordinary scenes preserve the requested background.
+
+Follow the application's response envelope: the resulting prompt belongs in its text field when structured output is required. Missing essential information uses the application's NeedsInput or NeedsSetup contract, not a fictional image description.

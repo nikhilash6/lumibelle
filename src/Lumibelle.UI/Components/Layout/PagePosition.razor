@@ -1,0 +1,20 @@
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+<span hidden @ref="_element" data-page-position="@Studio"></span>
+@code {
+    [Parameter] public Guid ProjectId { get; set; }
+    [Parameter] public string Studio { get; set; } = "overview";
+    private IJSObjectReference? _module, _position;
+    private ElementReference _element;
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        try { _module = await JS.InvokeAsync<IJSObjectReference>("import", UiAssets.Module("workspace-position.js")); _position = await _module.InvokeAsync<IJSObjectReference>("page", ProjectId.ToString(), Studio, _element); }
+        catch (JSDisconnectedException) { }
+    }
+    public async ValueTask DisposeAsync()
+    {
+        try { if (_position is not null) { await _position.InvokeVoidAsync("dispose"); await _position.DisposeAsync(); } if (_module is not null) await _module.DisposeAsync(); }
+        catch (JSDisconnectedException) { }
+    }
+}

@@ -1,0 +1,18 @@
+@using lumibelle.Services.AI
+<div class="probe-rating" role="group" aria-label="Request fulfillment rating">
+    @for (var number = 1; number <= 5; number++)
+    {
+        var score = number;
+        <button type="button" disabled="@Disabled" aria-label="@ContentProbePolicy.Scale[score - 1]"
+                title="@ContentProbePolicy.Scale[score - 1]" aria-pressed="@(Value == score ? "true" : "false")"
+                @onclick="() => ValueChanged.InvokeAsync(score)">@score</button>
+    }
+    <button type="button" class="probe-rating-clear" disabled="@(Disabled || Value is null)"
+            aria-label="Clear rating" @onclick="() => ValueChanged.InvokeAsync((int?)null)">Clear</button>
+    <span class="sr-only" role="status">@(Value is { } value ? $"Rated {value} of 5" : "Unrated")</span>
+</div>
+@code {
+    [Parameter] public int? Value { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public EventCallback<int?> ValueChanged { get; set; }
+}

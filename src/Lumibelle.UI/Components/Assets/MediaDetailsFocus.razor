@@ -1,0 +1,13 @@
+@inject IJSRuntime JS
+@code {
+    [Parameter] public Guid? NameId { get; set; }
+    [Parameter] public EventCallback Handled { get; set; }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (NameId is not { } id) return;
+        try { await JS.InvokeVoidAsync("lumibelleAssets.focusMediaName", id.ToString()); }
+        catch (Exception e) when (e is JSException or JSDisconnectedException) { }
+        await Handled.InvokeAsync();
+    }
+}

@@ -1,0 +1,85 @@
+@inherits ProjectAwareComponent
+@inject IFrameArchiveCleanupStore Store
+
+<section class="archive-cleanup" aria-label="Lossless frame archive cleanup" data-interactive="@(_interactive ? "true" : "false")">
+    <p>Keep your MP4 videos and free the space used by lossless frame archives. You can still select and save frames by extracting them from compressed video with FFmpeg. Saved Assets, Cut edits, generation settings and refinement packages stay intact.</p>
+    <div class="cleanup-toolbar">
+        <label>Project<select aria-label="Archive project" value="@_project" @onchange="FilterChanged" disabled="@(_busy || _loading)"><option value="">All projects</option>@foreach (var project in _library.Items.DistinctBy(r => r.ProjectId)) { <option value="@project.ProjectId">@project.ProjectName</option> }</select></label>
+        <button @ref="_refresh" disabled="@(_busy || _loading)" @onclick="Refresh">Refresh archives</button>
+        <span role="status">@Filtered.Count archive@(Filtered.Count == 1 ? "" : "s") · @StorageSize.Format(Filtered.Sum(r => r.Bytes)) reclaimable</span>
+    </div>
+    <div class="cleanup-toolbar">
+        <button disabled="@(_busy || _loading || Filtered.Count == 0)" @onclick="SelectAll">Select all in this project scope</button>
+        <button disabled="@(_busy || _selected.Count == 0)" @onclick="() => _selected.Clear()">Clear selection</button>
+        <MudButton Color="Color.Error" Variant="Variant.Outlined" Disabled="@(_busy || _selected.Count == 0)" OnClick="Confirm">Remove selected archives (@_selected.Count)</MudButton>
+    </div>
+    @if (_loading) { <p role="status">Checking saved archives…</p> }
+    @if (_busy) { <p role="status">Checking MP4s and removing archives…</p> }
+    @if (_notice is not null) { <p role="status">@_notice</p> }
+    @if (_error is not null) { <p role="alert">@_error</p> }
+    @foreach (var issue in _library.Issues) { <p role="alert">@issue.Message</p> }
+    @if (!_loading && Filtered.Count == 0) { <div class="empty-library"><h2>No lossless archives to remove</h2><p>New takes save only MP4 unless you enable Save lossless frames in Shots. Discarded takes are managed in Trash.</p></div> }
+    <div class="archive-cleanup-list">
+        @foreach (var row in Filtered.Skip(_page * PageSize).Take(PageSize))
+        {
+            <article class="archive-cleanup-row" @key="row.TakeId">
+                <label><input type="checkbox" checked="@_selected.Contains(row.TakeId)" disabled="@_busy" @onchange="e => Select(row.TakeId, e.Value is true)" aria-label="Select archive for @row.Title" /><span><strong>@row.Title</strong><small><a href="@(ProjectLink(row.ProjectId, "/shots"))">@row.ProjectName</a> · @row.FrameCount frames @(row.SelectedTake ? "· Selected production take" : "")</small></span></label>
+                <strong class="archive-bytes">@StorageSize.Format(row.Bytes)</strong>
+                @if (row.Pending) { <p role="status">Previously requested removal · retry to finish cleanup</p> }
+                @if (row.Issue is not null) { <p role="alert">@row.Issue</p> }
+            </article>
+        }
+    </div>
+    @if (Filtered.Count > PageSize) { <nav class="cleanup-toolbar" aria-label="Archive pages"><button disabled="@(_page == 0 || _busy)" @onclick="() => _page--">Previous</button><span>Page @(_page + 1) of @PageCount</span><button disabled="@(_page + 1 >= PageCount || _busy)" @onclick="() => _page++">Next</button></nav> }
+</section>
+<InlineDialog Visible="_confirm" VisibleChanged="v => _confirm = v" Options="Options" Class="archive-cleanup-confirm" DefaultFocus="DefaultFocus.FirstChild" ContentClass="dialog-prose"
+              Title="Remove lossless frame archives?" CloseLabel="Close remove frame archives">
+    <DialogContent><DialogEscape Pressed="() => _confirm = false" /><p>Remove @_pending.Count archive@(_pending.Count == 1 ? "" : "s") and free approximately <strong>@StorageSize.Format(_pending.Sum(r => r.Bytes))</strong>?</p><p>MP4 videos remain playable. Future saved frames from these takes will come from compressed video instead of the original lossless images. This cannot be undone.</p><p>Only these captured takes are included. Other projects and new takes are excluded.</p><ul>@foreach (var row in _pending.Take(10)) { <li>@row.ProjectName · @row.Title</li> }</ul>@if (_pending.Count > 10) { <p>And @(_pending.Count - 10) more selected takes.</p> }</DialogContent>
+    <DialogActions><MudButton OnClick="() => _confirm = false">Cancel</MudButton><MudButton Color="Color.Error" Variant="Variant.Filled" OnClick="Remove">Remove archives permanently</MudButton></DialogActions>
+</InlineDialog>
+
+@code {
+    private const int PageSize = 24;
+    private FrameArchiveLibrary _library = new([], []);
+    private HashSet<Guid> _selected = [];
+    private IReadOnlyList<FrameArchiveRow> _pending = [];
+    private string _project = "";
+    private string? _error, _notice;
+    private int _page;
+    private bool _loading, _busy, _confirm, _interactive, _focus;
+    private ElementReference _refresh;
+    private DialogOptions Options => new() { MaxWidth = MaxWidth.Small, FullWidth = true, CloseOnEscapeKey = true };
+    private IReadOnlyList<FrameArchiveRow> Filtered => _library.Items.Where(r => _project.Length == 0 || r.ProjectId.ToString() == _project).ToArray();
+    private int PageCount => Math.Max(1, (Filtered.Count + PageSize - 1) / PageSize);
+    protected override Task OnInitializedAsync() => Refresh();
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender) { _interactive = true; StateHasChanged(); }
+        if (_focus) { _focus = false; await _refresh.FocusAsync(); }
+    }
+    private async Task Refresh()
+    {
+        _loading = true;
+        try { _library = await Store.ListAsync(); _selected.IntersectWith(_library.Items.Select(r => r.TakeId)); _page = Math.Min(_page, PageCount - 1); }
+        catch (Exception e) { _error = e.Message; }
+        finally { _loading = false; }
+    }
+    private void FilterChanged(ChangeEventArgs e) { _project = e.Value?.ToString() ?? ""; _selected.Clear(); _page = 0; }
+    private void Select(Guid id, bool value) { if (value) _selected.Add(id); else _selected.Remove(id); }
+    private void SelectAll() => _selected = Filtered.Select(r => r.TakeId).ToHashSet();
+    private void Confirm() { _pending = Filtered.Where(r => _selected.Contains(r.TakeId)).ToArray(); _confirm = true; }
+    private async Task Remove()
+    {
+        if (_busy) return;
+        _confirm = false; _busy = true; _error = null;
+        try
+        {
+            var result = await Store.RemoveAsync(_pending);
+            _notice = $"{result.Completed} archive(s) removed · approximately {StorageSize.Format(result.ReclaimedBytes)} freed.";
+            if (result.Issues.Count > 0) _error = string.Join(" ", result.Issues.Select(i => i.Message));
+            await Refresh(); _focus = true;
+        }
+        catch (Exception e) { _error = e.Message; }
+        finally { _busy = false; }
+    }
+}

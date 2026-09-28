@@ -1,0 +1,23 @@
+@inject IProjectStore Projects
+<section class="settings-card project-video-defaults" aria-labelledby="project-video-heading" data-interactive="@(_interactive ? "true" : "false")">
+    <h2 id="project-video-heading">Video defaults</h2>
+    <label for="project-video-aspect">Video aspect</label><select id="project-video-aspect" @bind="_aspect" disabled="@(_saving || !_interactive)"><option value="16:9">Landscape · 16:9</option><option value="9:16">Portrait · 9:16</option><option value="1:1">Square · 1:1</option></select>
+    <p class="field-hint">New shots follow this aspect. Individual shots can override it. Queued jobs and saved takes keep their captured dimensions.</p>
+    <div class="settings-actions"><MudButton OnClick="Cancel" Disabled="_saving">Cancel</MudButton><MudButton OnClick="Save" Disabled="@(_saving || _aspect == _saved?.VideoAspect)" Color="Color.Primary" Variant="Variant.Filled">Save video defaults</MudButton></div>
+    @if (_error is not null) { <p role="alert">@_error</p> } else if (_status is not null) { <p role="status">@_status</p> }
+</section>
+@code {
+    [Parameter, EditorRequired] public ProjectInfo Project { get; set; } = null!;
+    [Parameter] public EventCallback<ProjectInfo> Changed { get; set; }
+    private ProjectInfo? _saved; private string _aspect = "16:9"; private string? _error, _status; private bool _saving, _interactive;
+    protected override void OnAfterRender(bool firstRender) { if (firstRender) { _interactive = true; StateHasChanged(); } }
+    protected override void OnParametersSet() { if (_saved?.Id != Project.Id) { _saved = Project; _aspect = Project.VideoAspect; } else if (_saved.VideoAspect == Project.VideoAspect) _saved = Project; }
+    private async Task Cancel() { try { _saved = await Projects.GetAsync(Project.Id); _aspect = _saved?.VideoAspect ?? "16:9"; _error = _status = null; if (_saved is not null) await Changed.InvokeAsync(_saved); } catch (Exception e) { _error = e.Message; } }
+    private async Task Save()
+    {
+        if (_saving || _saved is null) return; _saving = true; _error = _status = null;
+        try { _saved = await Projects.UpdateAsync(_saved, new(_saved.Name, _saved.Description, _aspect)); await Changed.InvokeAsync(_saved); _status = "Video defaults saved."; }
+        catch (Exception e) { _error = e.Message; }
+        finally { _saving = false; }
+    }
+}

@@ -1,0 +1,41 @@
+<details class="extraction-proposal" open="InitiallyOpen">
+    <summary class="extraction-proposal-heading">
+        <span class="proposal-identity"><strong>@Proposal.Name</strong><small>@CategoryName(Proposal.Category)@(Proposal.Looks.Count > 0 ? $" · {Proposal.Looks.Count} looks" : "")</small></span>
+        <span class="proposal-decision">@DecisionLabel</span>
+    </summary>
+    <div class="extraction-proposal-fields">
+        <div class="proposal-row">
+            <label class="extraction-field">Action<select aria-label="Decision for @Proposal.Name" @bind="Proposal.Decision" @bind:after="NotifyChanged"><option value="Create">Add as a new asset</option><option value="Merge">Update an existing asset</option><option value="Skip">Skip this suggestion</option></select></label>
+            @if (Proposal.Decision == ExtractionDecision.Merge)
+            {
+                <label class="extraction-field">Asset to update<select aria-label="Existing asset for @Proposal.Name" @bind="Proposal.MatchedAssetId" @bind:after="NotifyChanged"><option value="">Choose asset…</option>@foreach (var asset in ExistingAssets) { <option value="@asset.Id">@asset.Name</option> }</select></label>
+            }
+        </div>
+        @if (Proposal.Decision == ExtractionDecision.Skip) { <p class="field-hint">This suggestion and its looks will not be added.</p> }
+        <div class="proposal-row">
+            <label class="extraction-field">Category<select aria-label="Category for @Proposal.Name" @bind="Proposal.Category" @bind:after="NotifyChanged">@foreach (var category in Enum.GetValues<AssetCategory>()) { <option value="@category">@CategoryName(category)</option> }</select></label>
+            <label class="extraction-field">Asset name<input aria-label="Asset name" @bind="Proposal.Name" @bind:after="NotifyChanged" @bind:event="oninput" /></label>
+        </div>
+        <label class="extraction-field">@(Proposal.Category == AssetCategory.Character ? "Character identity notes" : "Visual notes")<textarea rows="3" @bind="Proposal.Description" @bind:after="NotifyChanged" @bind:event="oninput"></textarea></label>
+        <label class="extraction-field">Suggested image tags<input value="@string.Join(", ", Proposal.SuggestedTags)" @oninput="TagsChanged" /></label>
+        <LookExtractionEditor Proposal="Proposal" Changed="NotifyChanged" Target="@(Proposal.Decision == ExtractionDecision.Merge ? ExistingAssets.FirstOrDefault(a => a.Id == Proposal.MatchedAssetId) : null)" />
+        @if (Proposal.Evidence.Count > 0)
+        {
+            <details class="proposal-evidence"><summary>Script evidence · @Proposal.Evidence.Count</summary>
+                @foreach (var evidence in Proposal.Evidence) { <blockquote><strong>@evidence.Label</strong><span>@evidence.Excerpt</span><small>@EvidenceStatus(evidence)</small></blockquote> }
+            </details>
+        }
+    </div>
+</details>
+@code {
+    [Parameter, EditorRequired] public AssetExtractionProposal Proposal { get; set; } = default!;
+    [Parameter, EditorRequired] public IReadOnlyList<ReferenceAsset> ExistingAssets { get; set; } = [];
+    [Parameter, EditorRequired] public Func<AssetSourceEvidence, string> EvidenceStatus { get; set; } = default!;
+    [Parameter] public bool InitiallyOpen { get; set; }
+    [Parameter] public EventCallback Changed { get; set; }
+    private Task NotifyChanged() => Changed.InvokeAsync();
+    private Task TagsChanged(ChangeEventArgs args) { Proposal.SuggestedTags = Tags(args.Value?.ToString()); return NotifyChanged(); }
+    private string DecisionLabel => Proposal.Decision switch { ExtractionDecision.Create => "To add", ExtractionDecision.Merge => "To update", _ => "Skipped" };
+    private static string CategoryName(AssetCategory value) => value switch { AssetCategory.Character => "Character", AssetCategory.Environment => "Environment", AssetCategory.Prop => "Prop", _ => "Reference" };
+    private static List<string> Tags(string? value) => (value ?? "").Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+}

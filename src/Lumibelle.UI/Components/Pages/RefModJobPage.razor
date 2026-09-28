@@ -1,0 +1,61 @@
+@page "/projects/{ProjectKey}/refmods/{JobId:guid}"
+@inherits lumibelle.Components.ProjectAwareComponent
+@implements IAsyncDisposable
+@using lumibelle.Models
+@using lumibelle.Services
+@using lumibelle.Services.AI
+@inject IProjectRoutes Routes
+@inject AiJobCoordinator Jobs
+@inject IAiJobStore JobStore
+
+<PageTitle>RefMod build · Lumibelle</PageTitle>
+<h1>Selected-keyframe RefMod build</h1>
+@if (_error is not null) { <p role="alert">@_error</p> }
+@if (_job is { } job) {
+    <p>@job.TargetName · @job.State</p>
+    <AiJobProgressView Job="job" Queue="Jobs.View" Progress="Jobs.Progress(job.Id)" />
+    @if (job.Error is not null) { <p role="status">@job.Error</p> }
+    @if (job.CanRetryCaptured) { <button disabled="@_busy" @onclick="() => Command(() => Jobs.ResumeAsync(job.Id, _lifetime.Token))">Retry saved output / check status</button> }
+    @if (job.LocksTarget || job.RemoteUnconfirmed) { <button disabled="@_busy" @onclick="() => Command(() => Jobs.CancelAsync(job.Id, _lifetime.Token))">Cancel build</button> }
+    @if (_result is { } result) {
+        <p>Saved Full visual RefMod: @result.Reference.Recipe.LatentFrames frames · @result.Reference.Recipe.Width × @result.Reference.Recipe.Height · @result.Reference.Recipe.Tokens.ToString("N0") visual reference tokens.</p>
+        <p>The RefMod is stored on @result.Reference.ComfyUrl as @result.Reference.FileName<text>.safetensors</text>. The exact source images and recipe are stored in this project; the remote file is only a cache. Reopen the shot's reference editor, choose the same frames and canvas, and Prepare previews to attach this reference. Once attached, generation automatically rebuilds a missing cache on its execution server without changing the accepted reference or prompt.</p>
+    }
+    @if (job.Target.ProjectId is { } project) { <p><a href="@ProjectLink(project, "/shots")">Return to Shots</a></p> }
+}
+
+@code {
+    [Parameter] public string ProjectKey { get; set; } = "";
+    [Parameter] public Guid JobId { get; set; }
+    private readonly CancellationTokenSource _lifetime = new();
+    private AiJobHeader? _job;
+    private RefModBuildResult? _result;
+    private string? _error;
+    private bool _disposed, _busy;
+    protected override void OnInitialized() => Jobs.Changed += Refresh;
+    protected override Task OnParametersSetAsync() => Load();
+    private async Task Load()
+    {
+        var key = ProjectKey; var id = JobId;
+        try {
+            var route = await Routes.ResolveAsync(key, _lifetime.Token);
+            var queue = await JobStore.ReadAsync(_lifetime.Token);
+            var job = queue.Jobs.FirstOrDefault(j => route is not null && j.Id == id && j.Kind == AiJobKind.RefModBuild && j.Target.ProjectId == route.ProjectId);
+            var result = job is null ? null : await JobStore.ReadArtifactAsync<RefModBuildResult>(id, AiJobArtifact.Result, _lifetime.Token);
+            if (_disposed || ProjectKey != key || JobId != id) return;
+            _job = job; _result = result; _error = job is null ? "This build request is unavailable in this project." : null;
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (Exception e) { if (!_disposed && ProjectKey == key && JobId == id) _error = e.Message; }
+    }
+    private void Refresh() { if (!_disposed) _ = InvokeAsync(async () => { await Load(); if (!_disposed) StateHasChanged(); }); }
+    private async Task Command(Func<Task> action)
+    {
+        if (_busy || _disposed) return;
+        _busy = true;
+        try { await action(); await Load(); }
+        catch (Exception e) { if (!_disposed) _error = e.Message; }
+        finally { _busy = false; }
+    }
+    public async ValueTask DisposeAsync() { _disposed = true; Jobs.Changed -= Refresh; await _lifetime.CancelAsync(); _lifetime.Dispose(); }
+}

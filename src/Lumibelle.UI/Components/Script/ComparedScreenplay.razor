@@ -1,0 +1,21 @@
+<div class="screenplay-preview screenplay-diff">
+    @foreach (var block in Blocks)
+    {
+        <div class="comparison-block" data-change="@block.Change">
+            @if (block.Change != "Unchanged") { <p class="change-label">@block.Change</p> }
+            <p class="script-block script-@block.Kind.ToString().ToLowerInvariant()">
+                @foreach (var span in block.Spans)
+                {
+                    if (span.Changed && Before) { <del><ComparedText Span="span" /></del> }
+                    else if (span.Changed) { <ins><ComparedText Span="span" /></ins> }
+                    else { <ComparedText Span="span" /> }
+                }
+            </p>
+        </div>
+    }
+    @if (Blocks.Count == 0) { <p class="field-hint">No text replaced. This adds new writing after the captured target.</p> }
+</div>
+@code {
+    [Parameter] public IReadOnlyList<ComparedBlock> Blocks { get; set; } = [];
+    [Parameter] public bool Before { get; set; }
+}

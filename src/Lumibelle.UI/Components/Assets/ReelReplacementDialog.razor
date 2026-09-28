@@ -1,0 +1,98 @@
+@implements IAsyncDisposable
+@inject ReelReplacement Replacement
+
+<InlineDialog Visible="@(Reel is not null)" VisibleChanged="async v => { if (!v) await Close(); }" Options="Options" Class="reel-replacement-dialog"
+              Title="Replace a reel in shots" Context="@Reel?.Name" CloseLabel="Close replace a reel in shots" CloseDisabled="_busy">
+<DialogContent>
+    @if (Reel is { } reel) {
+    <DialogEscape Pressed="Close" />
+    @if (Candidates.Count == 0) { <p>This asset has no other reel to replace.</p> }
+    else {
+        <label class="reel-replacement-field">Replace
+            <select aria-label="Reel to replace" value="@_from" @onchange="Choose" disabled="@_busy">
+                @foreach (var candidate in Candidates) { <option value="@candidate.Id">@Label(candidate)</option> }
+            </select>
+        </label>
+        <p>with <strong>@reel.Name</strong> · @VideoResolutions.Dimensions(reel)</p>
+        <p class="field-hint">Shots keep their reel name, guidance, visual mode and voice choices. Keyframes and crops move to the same moments in this reel. Takes already generated keep the reel they used.</p>
+        @if (_plan is { } plan) {
+            @if (plan.Shots.Count == 0) { <p role="status">No shots use this reel.</p> }
+            else {
+                <h3>Used in @Count(plan.Shots.Count)</h3>
+                <ul class="reel-replacement-shots">
+                    @foreach (var shot in plan.Shots) { <li>@shot.Title @if (shot.Issue is not null) { <small class="reel-replacement-issue"> · Skipped: @shot.Issue</small> }</li> }
+                </ul>
+            }
+        }
+        else if (_error is null) { <p role="status">Finding shots…</p> }
+    }
+    @if (_notice is not null) { <p role="status">@_notice</p> }
+    @if (_error is not null) { <p role="alert">@_error</p> }
+    }
+</DialogContent>
+<DialogActions>
+    <MudButton OnClick="Close" Disabled="_busy">Close</MudButton>
+    <MudButton OnClick="Apply" Disabled="@(_busy || _plan?.Ready is not > 0)" Variant="Variant.Filled" Color="Color.Primary">@(_busy && _applying ? "Replacing…" : $"Replace in {Count(_plan?.Ready ?? 0)}")</MudButton>
+</DialogActions>
+</InlineDialog>
+
+@code {
+    [Parameter] public Guid ProjectId { get; set; }
+    // The reel that takes the other reel's place.
+    [Parameter] public AssetReferenceReel? Reel { get; set; }
+    [Parameter, EditorRequired] public AssetLibrary Library { get; set; } = default!;
+    [Parameter] public EventCallback Closed { get; set; }
+    private static readonly DialogOptions Options = new() { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false };
+    private readonly CancellationTokenSource _lifetime = new();
+    private Guid? _reelId;
+    private Guid _from;
+    private ReelReplacementPlan? _plan;
+    private bool _busy, _applying;
+    private string? _error, _notice;
+    private IReadOnlyList<AssetReferenceReel> Candidates => Reel is { } reel
+        ? Library.Reels.Where(r => r.AssetId == reel.AssetId && r.Media.Id != reel.Media.Id).OrderByDescending(r => r.CreatedUtc).ToArray() : [];
+    private static string Count(int shots) => shots == 1 ? "1 shot" : $"{shots} shots";
+    private static string Label(AssetReferenceReel reel) => $"{reel.Name} · {VideoResolutions.Dimensions(reel)} · {reel.CreatedUtc.ToLocalTime():g}";
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_reelId == Reel?.Id) return;
+        _reelId = Reel?.Id; _plan = null; _error = null; _notice = null;
+        if (Reel is null || Candidates.Count == 0) return;
+        // A regenerated reel most likely replaces the reel it was regenerated from.
+        var source = Reel.Generation?.Snapshot.Reel?.RegenerationSource?.ReelId;
+        _from = Candidates.FirstOrDefault(r => r.Id == source)?.Id ?? Candidates[0].Id;
+        await Plan();
+    }
+    private async Task Choose(ChangeEventArgs e)
+    {
+        if (_busy || !Guid.TryParse(e.Value?.ToString(), out var from)) return;
+        _from = from; _notice = null; await Plan();
+    }
+    private async Task Plan()
+    {
+        if (Reel is not { } reel) return;
+        _busy = true; _plan = null; _error = null;
+        try { _plan = await Replacement.PlanAsync(ProjectId, _from, reel.Id, _lifetime.Token); }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (Exception e) { _error = e.Message; }
+        finally { _busy = false; }
+    }
+    private async Task Apply()
+    {
+        if (_busy || Reel is not { } reel || _plan?.Ready is not > 0) return;
+        _busy = true; _applying = true; _error = null; _notice = null;
+        try {
+            var result = await Replacement.ApplyAsync(ProjectId, _from, reel.Id, _lifetime.Token);
+            var skipped = result.Shots.Count - result.Ready;
+            _notice = $"Replaced in {Count(result.Ready)}. Their next takes use {reel.Name}." + (skipped > 0 ? $" {Count(skipped)} skipped." : "");
+            _plan = await Replacement.PlanAsync(ProjectId, _from, reel.Id, _lifetime.Token);
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (WorkspaceConflictException) { _error = "Shots were saved while replacing. Nothing was replaced; try again."; await Plan(); }
+        catch (Exception e) { _error = e.Message; }
+        finally { _busy = false; _applying = false; }
+    }
+    private Task Close() => _busy ? Task.CompletedTask : Closed.InvokeAsync();
+    public ValueTask DisposeAsync() { _lifetime.Cancel(); _lifetime.Dispose(); return ValueTask.CompletedTask; }
+}

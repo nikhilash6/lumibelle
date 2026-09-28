@@ -1,0 +1,53 @@
+{
+  "files": [
+    {
+      "label": "model",
+      "path": "/comfyui/models/diffusion_models/minimax_h3_ref2va_pruned_w4a8_mixed.safetensors",
+      "bytes": 11770657048,
+      "sha256": "de2c6c29c4ee702b45e48e40daae3834aeee58ab681c732d9152589a87c89910"
+    },
+    {
+      "label": "encoder",
+      "path": "/comfyui/models/text_encoders/qwen3vl_32b_minimax_h3-w4a8_convrot.safetensors",
+      "bytes": 15697532972,
+      "sha256": "808e3b351e71e3dd2444e2cdd6accc701e5b40254ede13d481936e6332c7a0e2"
+    },
+    {
+      "label": "videoVae",
+      "path": "/comfyui/models/vae/minimax_h3_video_vae_int8_convrot.safetensors",
+      "bytes": 3171670912,
+      "sha256": "9bb2d96f218c76babd85e0611b85ca8fb330a90546c01a0005e8a58a59593410"
+    },
+    {
+      "label": "audioVae",
+      "path": "/comfyui/models/vae/minimax_h3_audio_vae_fp32.safetensors",
+      "bytes": 605254808,
+      "sha256": "8e505d95dd1561d47abd43d4238fd40d9bb1ae9e147ed0a4cba778d76ae4db48"
+    },
+    {
+      "label": "turboLora",
+      "path": "/comfyui/models/loras/minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
+      "bytes": 1956193000,
+      "sha256": "5b9ab5ade15d0775676d01a907268a69a1468dc6033b3b0d3ded5502f3ebb84c"
+    },
+    {
+      "label": "turbo8StepLora",
+      "path": "/comfyui/models/loras/minimax_h3_ref2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors",
+      "bytes": 1956193000,
+      "sha256": "6a56f41ab4229c9dd845b9501bbd475ee57e112d846cf2e819d534a1ae928c5a"
+    },
+    {
+      "label": "latentUpscaler",
+      "path": "/comfyui/models/latent_upscale_models/minimax_h3_latent_upscaler_3d_fp16.safetensors",
+      "bytes": 690592672,
+      "sha256": "043e5a48e161610ef6c3ea974645220354d06fa618abca15f76d084812eb55c2"
+    }
+  ],
+  "core_sha256": {
+    "nodes.py": "f7b6a909bf9a47296b974b730e5db0ec2137a3c6a64dda045970951d7382d4c7",
+    "execution.py": "e4058e4cc03e89753f41a62f51d4534933a35e243358aa6796a65a9fd0bdda28",
+    "comfy_extras/nodes_minimax_h3.py": "33cb3cd5cec07ccdbacb244e0d1f141abc9959553b746e55756058afd3713a09",
+    "comfy/ldm/minimax/model.py": "0d5edcf32b4b98d704eaa51de60ed71f507d0c7d9845947f566647dc76fb8dfe",
+    "comfy/model_management.py": "ef3f3af0657c1b022ad69b25928fa52dd429db9aed9cb688e89c7fbe68ab50cd"
+  }
+}

@@ -1,0 +1,33 @@
+@foreach (var run in Runs.Where(r => r.Refinement?.ParentTakeId == ParentId && !Ancestors.Contains(r.Id)).OrderBy(r => r.CreatedUtc))
+{
+    <section class="take-versions" aria-label="@($"{run.Refinement!.Mode} versions")">
+        <h4>@run.Refinement.Mode · @run.Refinement.Width × @run.Refinement.Height <span class="experimental-badge">Experimental</span></h4>
+        @if (run.Candidates.Any(c => c.State is not (VideoCandidateState.Complete or VideoCandidateState.Cancelled))) { <p class="field-hint" role="status">@run.Status</p> }
+        @foreach (var candidate in run.Candidates)
+        {
+            var saved = Takes.FirstOrDefault(t => t.Id == candidate.TakeId);
+            <article class="shot-candidate" @key="candidate.TakeId">
+                @if (saved is not null)
+                {
+                    <button data-shot-take="@saved.Id" aria-pressed="@(SelectedId == saved.Id ? "true" : "false")" @onclick="() => Select.InvokeAsync(saved.Id)"><img src="@($"/media/projects/{ProjectId}/takes/{saved.Id}/frames/0")" alt="" loading="lazy" />@RefinementPolicy.Label(saved)</button>
+                    <button disabled="@Busy" @onclick="() => Use.InvokeAsync(saved)">@(ProductionId == saved.Id ? "Deselect take" : "Use this take")</button><button disabled="@(Busy || ProductionId == saved.Id)" @onclick="() => Discard.InvokeAsync(saved)">Discard</button>
+                }
+                else { <strong>Version @candidate.Number</strong><p>@(candidate.State == VideoCandidateState.Complete ? "Discarded · recoverable in Trash" : candidate.State)</p> }
+            </article>
+            <TakeVersions ProjectId="ProjectId" ParentId="candidate.TakeId" Runs="Runs" Takes="Takes" SelectedId="SelectedId" ProductionId="ProductionId" Busy="Busy" Select="Select" Use="Use" Discard="Discard" Ancestors="@(Ancestors.Append(run.Id).ToArray())" />
+        }
+    </section>
+}
+@code {
+    [Parameter] public Guid ProjectId { get; set; }
+    [Parameter] public Guid ParentId { get; set; }
+    [Parameter] public Guid? SelectedId { get; set; }
+    [Parameter] public Guid? ProductionId { get; set; }
+    [Parameter] public IReadOnlyList<VideoRun> Runs { get; set; } = [];
+    [Parameter] public IReadOnlyList<ShotTake> Takes { get; set; } = [];
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public IReadOnlyList<Guid> Ancestors { get; set; } = [];
+    [Parameter] public EventCallback<Guid> Select { get; set; }
+    [Parameter] public EventCallback<ShotTake> Use { get; set; }
+    [Parameter] public EventCallback<ShotTake> Discard { get; set; }
+}

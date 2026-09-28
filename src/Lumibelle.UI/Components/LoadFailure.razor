@@ -1,0 +1,50 @@
+@inject ILogger<LoadFailure> Logger
+
+@* Shown in place of a studio whose required document cannot be read. The advice
+   depends on the cause; the file and raw error stay in the collapsed details and log. *@
+<section class="load-failure" role="alert">
+    <h1>@Title</h1>
+    <p class="load-failure-message">@Error.Message</p>
+    <p>@Advice</p>
+    <MudButton OnClick="RetryAsync" Disabled="_retrying" Variant="Variant.Outlined">@(_retrying ? "Trying again…" : "Try again")</MudButton>
+    @if (FilePath is not null || Error.InnerException is not null)
+    {
+        <details class="load-failure-details">
+            <summary>Technical details</summary>
+            @if (FilePath is not null) { <p>File: <code>@FilePath</code></p> }
+            @if (Error.InnerException is { } cause) { <p>@cause.GetType().Name: @cause.Message</p> }
+        </details>
+    }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public string Title { get; set; } = "";
+    [Parameter, EditorRequired] public Exception Error { get; set; } = null!;
+    [Parameter] public EventCallback Retry { get; set; }
+    private Exception? _logged;
+    private bool _retrying;
+
+    private string? FilePath => Error.Data["path"] as string;
+    private string Advice => Error.InnerException switch
+    {
+        System.Text.Json.JsonException => "The saved file is damaged, so Lumibelle has left it untouched. Restore it from a backup of the project folder, then try again.",
+        UnauthorizedAccessException => "Lumibelle isn’t allowed to open the file. Check that your account can access the project folder, then try again.",
+        DirectoryNotFoundException => "The project folder can’t be found. It may have been moved or deleted; check the project library location.",
+        IOException => "Another program, such as a sync or backup tool, may be using the file. Wait a moment, then try again.",
+        _ => "Nothing has been changed. Try again in a moment."
+    };
+
+    protected override void OnParametersSet()
+    {
+        if (ReferenceEquals(Error, _logged)) return;
+        _logged = Error;
+        Logger.LogWarning(Error.InnerException ?? Error, "{Title}: {Message} ({Path})", Title, Error.Message, FilePath ?? "no file");
+    }
+
+    private async Task RetryAsync()
+    {
+        _retrying = true;
+        try { await Retry.InvokeAsync(); }
+        finally { _retrying = false; }
+    }
+}

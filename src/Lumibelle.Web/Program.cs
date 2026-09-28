@@ -1,0 +1,12 @@
+using lumibelle;
+using lumibelle.Services;
+DisplayCulture.Apply();
+var builder = WebApplication.CreateBuilder(args);
+var configured = builder.Configuration["Lumibelle:DataDirectory"];
+var data = configured is not null ? Path.GetFullPath(configured, builder.Environment.ContentRootPath) : ApplicationPaths.UserDefault().Data;
+var projectOverride = builder.Configuration["Projects:RootDirectory"];
+var projects = projectOverride is null ? null : Path.GetFullPath(projectOverride, builder.Environment.ContentRootPath);
+builder.Services.AddLumibelleWeb(new ApplicationPaths(data, projects));
+var app = builder.Build();
+app.MapLumibelleWeb();
+app.Run();

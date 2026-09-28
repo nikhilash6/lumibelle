@@ -1,0 +1,164 @@
+@inherits ProjectAwareComponent
+@inject IAiTextRepairService Repairs
+@inject AiJobCoordinator Jobs
+@inject IAiJobStore Store
+@inject IAiReviewGate Reviews
+@inject NavigationManager Navigation
+@implements IDisposable
+
+@if (_offer is { } offer)
+{
+    <section class="text-validation-repair" aria-label="Text-only validation repair">
+        @if (_pending is not null)
+        {
+            <p class="field-hint">The repair request is captured. Retrying uses this same request, not another model call.</p>
+            <button type="button" disabled="@_busy" @onclick="Fix">@(_queued ? "Retry connecting repair" : "Retry repair submission")</button>
+        }
+        else if (offer.ExistingRepair is null && offer.Issue is null)
+        {
+            <p class="field-hint">New text-only request · @offer.ModelName. Sends the failed response, validation error and output contract; no images, audio or video. Review is required before applying. Normal provider charges apply.</p>
+            <button type="button" disabled="@_busy" @onclick="Fix">@(_busy ? "Preparing repair…" : "Fix validation")</button>
+        }
+        else if (offer.ExistingRepair is null && !(offer.IsRepair && offer.Source.State == AiJobState.Completed))
+        {
+            <p class="field-hint">@offer.Issue</p>
+        }
+        @if (offer.ExistingRepair is { } child)
+        {
+            <AiJobProgressView Job="child" Queue="Jobs.View" Progress="Jobs.Progress(child.Id)" />
+            <button type="button" disabled="@_busy" @onclick="() => OpenRepair(child.Id)">Review repair</button>
+            @if (_pending is null && AiTextRepairs.CanRepeat(child))
+            { <button type="button" disabled="@_busy" @onclick="() => FixAgain(child.Id)">Try another text-only repair</button> }
+            @if (_childResult is { Complete: true } result)
+            {
+                @if (result.Error is not null) { <p role="status">The correction still needs attention: @result.Error</p> }
+                <details><summary>Saved repair response</summary><pre tabindex="0">@result.Raw</pre></details>
+            }
+        }
+        else if (offer.IsRepair && offer.Source.State == AiJobState.Completed)
+        {
+            <p class="field-hint">Text-only correction. The original response is unchanged; this result is not automatically applied.</p>
+            <button type="button" disabled="@_busy" @onclick="() => OpenRepair(offer.Source.Id)">Connect correction for review</button>
+        }
+        @if (_error is not null) { <p class="field-error" role="alert">@_error</p> }
+    </section>
+}
+else if (_error is not null)
+{
+    <p class="field-error" role="alert">@_error</p>
+}
+
+@code {
+    [Parameter] public Guid JobId { get; set; }
+    [Parameter] public EventCallback<AiJobHeader> ReviewRequested { get; set; }
+    private readonly CancellationTokenSource _lifetime = new();
+    private AiTextRepairOffer? _offer;
+    private AiTextJobResult? _childResult;
+    private AiJobSubmission? _pending;
+    private Guid _for;
+    private string? _signature, _error;
+    private bool _busy, _queued, _disposed, _refreshing, _refreshAgain;
+
+    protected override void OnInitialized() => Jobs.Changed += QueueChanged;
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_for != JobId)
+        {
+            _for = JobId; _signature = null; _offer = null; _childResult = null;
+            _pending = null; _queued = false; _previousRepairId = null; _error = null;
+        }
+        await Refresh();
+    }
+    private void QueueChanged()
+    {
+        if (!_disposed) _ = InvokeAsync(async () => { await Refresh(); if (!_disposed) StateHasChanged(); });
+    }
+    private async Task Refresh()
+    {
+        if (_disposed || JobId == Guid.Empty) return;
+        if (_refreshing) { _refreshAgain = true; return; }
+        _refreshing = true;
+        try
+        {
+            do
+            {
+                _refreshAgain = false;
+                var id = JobId;
+                var source = Jobs.View.Jobs.FirstOrDefault(j => j.Id == id);
+                if (source is null || !AiTextRepairs.Supports(source.Kind)) { _offer = null; return; }
+                // Progress tokens do not require reparsing the saved failed output.
+                var signature = string.Join("|", Jobs.View.Jobs.Where(j => j.Target == source.Target && j.Kind == source.Kind)
+                    .Select(j => $"{j.Id}/{j.State}/{j.FinishedUtc}/{j.CancelRequested}/{j.RemoteUnconfirmed}/{j.Error}"));
+                if (_signature == signature) continue;
+                var offer = await Repairs.InspectAsync(id, _lifetime.Token);
+                AiTextJobResult? childResult = null;
+                if (offer?.ExistingRepair is { } child)
+                    childResult = await Store.ReadArtifactAsync<AiTextJobResult>(child.Id, AiJobArtifact.Result, _lifetime.Token);
+                if (!_disposed && JobId == id) { _offer = offer; _childResult = childResult; _signature = signature; }
+            } while (_refreshAgain && !_disposed);
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (Exception e) when (e is WorkspaceStoreException or ProjectStoreException or AiGenerationException)
+        { if (!_disposed) { _error = e.Message; _signature = null; } }
+        finally { _refreshing = false; }
+    }
+    private Guid? _previousRepairId;
+    private async Task FixAgain(Guid previous)
+    {
+        if (_busy) return;
+        _previousRepairId = previous;
+        await Fix();
+    }
+    private async Task Fix()
+    {
+        if (_busy || _offer is null) return;
+        _busy = true; _error = null; var source = JobId;
+        try
+        {
+            if (_pending is null)
+            {
+                var submission = await Repairs.CaptureAsync(source, Guid.NewGuid(), await Reviews.TabIdAsync(), _previousRepairId, _lifetime.Token);
+                if (_disposed || JobId != source) return;
+                _pending = submission;
+            }
+            var request = _pending ?? throw new WorkspaceStoreException("The repair selection changed. Reopen the saved response before retrying.");
+            // An acknowledged or uncertain enqueue always keeps the same ID and
+            // captured snapshot. Linking review is a separate retryable local save.
+            if (!_queued)
+            {
+                await Jobs.EnqueueAsync(request, _lifetime.Token);
+                if (_disposed || JobId != source) return;
+                _queued = true;
+            }
+            await Repairs.ConnectReviewAsync(request.Id, _lifetime.Token);
+            if (!_disposed && JobId == source) { _pending = null; _queued = false; _previousRepairId = null; _signature = null; await Refresh(); }
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (Exception e) when (e is WorkspaceStoreException or ProjectStoreException or AiGenerationException or HttpRequestException)
+        { if (!_disposed && JobId == source) { _error = e.Message; _signature = null; await Refresh(); } }
+        finally { _busy = false; }
+    }
+    private async Task OpenRepair(Guid id)
+    {
+        if (_busy) return;
+        _busy = true; _error = null; var source = JobId;
+        try
+        {
+            await Repairs.ConnectReviewAsync(id, _lifetime.Token);
+            var job = Jobs.View.Jobs.FirstOrDefault(j => j.Id == id);
+            if (job is not null && !_disposed && JobId == source)
+            {
+                if (ReviewRequested.HasDelegate) await ReviewRequested.InvokeAsync(job);
+                else Navigation.NavigateTo(ProjectLink(job.ReviewUrl));
+            }
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (Exception e) when (e is WorkspaceStoreException or ProjectStoreException or AiGenerationException)
+        { if (!_disposed && JobId == source) _error = e.Message; }
+        finally { _busy = false; }
+    }
+    public void Dispose()
+    {
+        _disposed = true; Jobs.Changed -= QueueChanged; _lifetime.Cancel(); _lifetime.Dispose();
+    }
+}

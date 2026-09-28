@@ -1,0 +1,287 @@
+@using lumibelle.Components.AI
+@inject AiJobCoordinator Jobs
+@inject IAiJobStore JobStore
+@inject IAiReviewGate Reviews
+@implements IAsyncDisposable
+<MudDialog>
+    <DialogContent>
+        <lumibelle.Components.AI.AiResultAcknowledgement Observed="@(_observedTestJob is { } read && read.Id == _jobId ? new[] { read } : [])" />
+        <p class="field-hint model-dialog-name">@TextModelPolicy.DisplayName(Model, SettingsSnapshot) · @Model.Model</p>
+        <div class="model-verification ai-settings-form">
+            <p class="model-verification-status @(SelectedModelVerified ? "verified" : "untested")" role="status">@VerificationStatus</p>
+            @if (IsOpenRouter)
+            {
+                <p class="field-hint">Tests send a real request to the selected model and can incur OpenRouter charges, including reasoning tokens. Normal generation defaults are unchanged. <a href="https://openrouter.ai/docs/cookbook/administration/usage-accounting" target="_blank" rel="noopener noreferrer">About reported usage ↗</a></p>
+                @if (LatestOpenRouterBenchmark is { } hosted) { <OpenRouterBenchmarkDetails Benchmark="hosted" /> }
+            }
+            else if (LatestBenchmark is { } benchmark)
+            {
+                <div class="model-benchmark" aria-label="Latest model benchmark">
+                    <p><strong>@BenchmarkHeadline(benchmark)</strong></p>
+                    @if (_result?.PartialBenchmark is not null) { <p class="field-hint">Partial measurements · this run has not verified the model.</p> }
+                    <p>@BenchmarkMemory(benchmark)</p>
+                    <p class="field-hint">Measured @benchmark.MeasuredUtc.ToLocalTime().ToString("g") @BenchmarkEnvironment(benchmark) using a @benchmark.TokenLimit-token @(benchmark.CustomPrompt ? "advanced test" : "standard benchmark"). @CacheStatus(benchmark)</p>
+                </div>
+            }
+            <MudButton OnClick="VerifySelectedModelAsync" Disabled="@(!CanTestModel)" Variant="Variant.Outlined">@VerificationButtonLabel</MudButton>
+            <details class="advanced-model-test">
+                <summary>Advanced model test</summary>
+                <p class="field-hint">Send your own message and inspect the complete reply. This can help reveal refusals or other model behavior. The message and response are retained in AI activity. Closing this dialog leaves the test running.</p>
+                <label for="advanced-test-prompt">Test message</label>
+                <textarea id="advanced-test-prompt" rows="4" maxlength="12000" @bind="_advancedTestPrompt" @bind:event="oninput" disabled="@Busy" placeholder="Write a prompt that tests the behavior you care about…"></textarea>
+                <label for="advanced-test-tokens">@(IsOpenRouter ? "Maximum total output tokens" : "Maximum reply tokens")</label>
+                <input id="advanced-test-tokens" type="number" min="1" max="@AdvancedTokenLimit" @bind="_advancedTestTokens" @bind:event="oninput" disabled="@Busy" />
+                @if (IsOpenRouter) { <p class="field-hint">This limit includes reasoning and the answer. Start with 2,048; increase it if reasoning uses the entire budget.</p> }
+                <MudButton OnClick="RunAdvancedModelTestAsync" Disabled="@(!CanRunAdvancedTest)" Variant="Variant.Outlined">Run advanced test</MudButton>
+                @if (!IsOpenRouter && _advancedTestResponse is not null)
+                {
+                    <section class="advanced-model-test-result" aria-live="polite" aria-label="Advanced model test response">
+                        <h3>Model response</h3>
+                        <pre>@(string.IsNullOrEmpty(_advancedTestResponse) ? "The model completed without returning text." : _advancedTestResponse)</pre>
+                    </section>
+                }
+            </details>
+            @if (IsOpenRouter && _result is { } testResult)
+            {
+                <section class="advanced-model-test-result" aria-live="polite" aria-label="OpenRouter model test response">
+                    <h3>Model response</h3><pre>@(string.IsNullOrEmpty(testResult.Response) ? "No response text returned." : testResult.Response)</pre>
+                    @if (testResult.Refusal is { } refusal) { <h3>Reported refusal</h3><pre>@refusal</pre> }
+                    @if (testResult.GuardrailReport is { } report) { <h3>OpenRouter guardrails reported</h3><pre>@report</pre> }
+                </section>
+            }
+            @if (CurrentJob is { } job)
+            {
+                <AiJobProgressView Job="job" Queue="Jobs.View" Progress="Jobs.Progress(job.Id)" />
+                @if (job.LocksTarget) { <button type="button" class="btn btn-secondary" @onclick="CancelVerification" disabled="@_commandBusy">Cancel test</button> }
+                @if (job.State == AiJobState.Cancelled) { <p role="status">Model test cancelled. Any completed response remains available.</p> }
+                @if (_result?.Saved == true) { <p role="status">Test result saved.@if (_result.OpenRouter is { HasReply: false, Refused: false }) { <span> No answer was produced.</span> }</p> }
+                @if (_result?.Recovered == true) { <p class="field-hint">Response recovered after interruption. Live speed and peak memory could not be measured.</p> }
+                @if (job.Error is not null) { <p class="field-error" role="alert">@job.Error</p> }
+                @if (RecoveryLabel is { } label) { <MudButton OnClick="RecoverAsync" Disabled="_commandBusy" Variant="Variant.Outlined">@label</MudButton> }
+            }
+            @if (_verificationError is not null) { <p class="field-error" role="alert">@_verificationError</p> }
+        </div>
+        @if (_pending is not null) { <MudButton OnClick="RetryEnqueueAsync" Disabled="_commandBusy" Variant="Variant.Outlined">Retry enqueue</MudButton> }
+    </DialogContent>
+    <DialogActions><MudButton OnClick="Close">Close</MudButton></DialogActions>
+</MudDialog>
+@code {
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = null!;
+    [Parameter, EditorRequired] public TextModelReference Model { get; set; } = null!;
+    [Parameter, EditorRequired] public AiSettings SettingsSnapshot { get; set; } = null!;
+    [Parameter] public AiConnectionCheck? Check { get; set; }
+    [Parameter] public Guid? JobId { get; set; }
+    [Parameter] public EventCallback<ComfyTextModelVerification> VerificationSaved { get; set; }
+    [Parameter] public EventCallback<OpenRouterTextModelBenchmark> OpenRouterTestSaved { get; set; }
+    private readonly List<ComfyTextModelVerification> _verifications = [];
+    private string? _comfyVersion, _verificationError, _advancedTestResponse;
+    private bool _commandBusy, _disposed, _loadingJob;
+    private string _advancedTestPrompt = "";
+    private int _advancedTestTokens = 256;
+    private int AdvancedTokenLimit => IsOpenRouter ? AiModelTestJobHandler.OpenRouterAdvancedMaxTokens : AiModelTestJobHandler.ComfyAdvancedMaxTokens;
+    private Guid? _jobId, _notified;
+    private AiJobSubmission? _pending;
+    private AiModelTestJobResult? _result;
+    private bool IsOpenRouter => Model.Backend == AiBackend.OpenRouter;
+    private OpenRouterTextModelBenchmark? LatestOpenRouterBenchmark => _result?.OpenRouter ?? SettingsSnapshot.OpenRouterTextModelBenchmarks
+        .Where(b => b.Model == Model.Model).OrderBy(b => b.CustomPrompt).ThenByDescending(b => b.MeasuredUtc).FirstOrDefault();
+    private string _comfyUrl => Model.ComfyUrl!;
+    private string _comfyModel => Model.Model;
+    private AiJobHeader? ActiveJob => Jobs.View.Jobs.LastOrDefault(j => j.Target.ModelKey == TextModelPolicy.Key(Model) && j.LocksTarget);
+    private AiJobHeader? CurrentJob => Jobs.View.Jobs.SingleOrDefault(j => j.Id == _jobId);
+    private bool Busy => _commandBusy || _loadingJob || ActiveJob is not null;
+    private bool SelectedModelVerified => _comfyVersion is not null && _verifications.Any(item =>
+        TextModelPolicy.SameServer(item.ComfyUrl, _comfyUrl) && item.Model == _comfyModel && item.ComfyVersion == _comfyVersion);
+    private bool CanTestModel => !Busy && _pending is null && Check?.Success == true && Check.Models.Any(model => model.Id == _comfyModel);
+    private bool CanRunAdvancedTest => CanTestModel && !string.IsNullOrWhiteSpace(_advancedTestPrompt) && _advancedTestTokens >= 1 && _advancedTestTokens <= AdvancedTokenLimit;
+    private string VerificationButtonLabel => IsOpenRouter ? "Run benchmark · 2,048 total tokens" : SelectedModelVerified ? "Test again · 256 tokens" : "Test selected model · 256 tokens";
+    private string VerificationStatus => IsOpenRouter
+        ? Check is null ? "Refresh OpenRouter in Text models to enable a new test." : !Check.Success ? Check.Message : Check.Models.All(m => m.Id != Model.Model) ? "This model is not available on OpenRouter." : "Run a benchmark to check generation before starring. Availability can change between requests."
+        : Check is null ? "Refresh ComfyUI in Text models to enable a new test on the saved server." : !Check.Success ? Check.Message : Check.Models.All(model => model.Id != _comfyModel) ? "This model is not available on the saved server." : SelectedModelVerified ? $"Verified with ComfyUI {_comfyVersion}." : "Run a test before starring this model.";
+    protected override async Task OnInitializedAsync()
+    {
+        if (IsOpenRouter)
+        {
+            _advancedTestTokens = AiModelTestJobHandler.OpenRouterBenchmarkTokens;
+            _advancedTestPrompt = AiModelTestJobHandler.OpenRouterBenchmarkPrompt;
+        }
+        _comfyVersion = Check?.BackendVersion; _verifications.AddRange(SettingsSnapshot.ComfyTextModelVerifications);
+        Jobs.Changed += Changed;
+        _jobId = JobId ?? ActiveJob?.Id ?? Jobs.View.Jobs.LastOrDefault(j => j.Target.ModelKey == TextModelPolicy.Key(Model))?.Id;
+        if (_jobId is { } id)
+        {
+            _loadingJob = true;
+            try
+            {
+                var request = AiModelTestJobHandler.Read(CurrentJob ?? throw new WorkspaceStoreException("Model test not found."), await JobStore.ReadSnapshotAsync(id));
+                if (!TextModelPolicy.Same(request.Model, Model)) throw new WorkspaceStoreException("This test belongs to another model.");
+                if (IsOpenRouter || request.Advanced) _advancedTestPrompt = request.Test.Prompt;
+                if (request.Advanced) _advancedTestTokens = request.Test.MaxOutputTokens;
+                await RefreshResultAsync();
+            }
+            catch (WorkspaceStoreException e) { _verificationError = e.Message; }
+            finally { _loadingJob = false; }
+        }
+    }
+    private void Close() => Dialog.Close();
+    private void Changed()
+    {
+        if (!_disposed) _ = InvokeAsync(async () =>
+        {
+            if (_disposed) return;
+            _jobId ??= ActiveJob?.Id;
+            await RefreshResultAsync();
+            if (!_disposed) StateHasChanged();
+        });
+    }
+    private AiJobHeader? _observedTestJob;
+    private async Task RefreshResultAsync()
+    {
+        if (CurrentJob is not { } job) return;
+        try
+        {
+            var result = await JobStore.ReadArtifactAsync<AiModelTestJobResult>(job.Id, AiJobArtifact.Result);
+            if (_disposed || job.Id != _jobId) return;
+            _observedTestJob = job;
+            if (result is null) return;
+            if (_result?.Saved == true && !result.Saved) return;
+            _result = result; _advancedTestResponse = result.Response;
+            if (result.Saved)
+            {
+                if (result.OpenRouter is { } hosted)
+                {
+                    if (_notified != job.Id) { _notified = job.Id; await OpenRouterTestSaved.InvokeAsync(hosted); }
+
+                    return;
+                }
+                if (result.Verification is not { } verification) return;
+                _comfyVersion = verification.ComfyVersion;
+                var prior = _verifications.Where(v => v.Model == verification.Model && TextModelPolicy.SameServer(v.ComfyUrl, verification.ComfyUrl) && v.ComfyVersion == verification.ComfyVersion).ToArray();
+                var benchmarks = prior.SelectMany(v => v.Benchmarks ?? []).Concat(verification.Benchmarks ?? []).Distinct().OrderByDescending(b => b.MeasuredUtc).Take(5).ToList();
+                _verifications.RemoveAll(v => prior.Contains(v)); _verifications.Add(verification with { Benchmarks = benchmarks });
+                if (_notified != job.Id) { _notified = job.Id; await VerificationSaved.InvokeAsync(verification); }
+
+            }
+        }
+        catch (WorkspaceStoreException e) { if (!_disposed) _verificationError = e.Message; }
+    }
+    private Task VerifySelectedModelAsync() => RunModelTestAsync();
+    private Task RunAdvancedModelTestAsync() => CanRunAdvancedTest ? RunModelTestAsync(new(_advancedTestPrompt, _advancedTestTokens)) : Task.CompletedTask;
+    private async Task RunModelTestAsync(ComfyTextModelTestRequest? request = null)
+    {
+        if (!CanTestModel) return;
+        _commandBusy = true; _verificationError = null;
+        try
+        {
+            _pending = AiModelTestJobHandler.Capture(Guid.NewGuid(), await Reviews.TabIdAsync(), Model, SettingsSnapshot, request);
+            await PublishAsync();
+        }
+        catch (Exception e) when (e is WorkspaceStoreException or AiGenerationException) { _verificationError = e.Message; }
+        finally { _commandBusy = false; }
+    }
+    private async Task PublishAsync()
+    {
+        if (_pending is null) return;
+        var job = await Jobs.EnqueueAsync(_pending);
+        _pending = null; _jobId = job.Id; _result = null; _advancedTestResponse = null; _notified = null;
+        await RefreshResultAsync();
+    }
+    private async Task RetryEnqueueAsync()
+    {
+        if (_commandBusy) return;
+        _commandBusy = true; _verificationError = null;
+        try { await PublishAsync(); }
+        catch (WorkspaceStoreException e) { _verificationError = e.Message; }
+        finally { _commandBusy = false; }
+    }
+    private string? RecoveryLabel => CurrentJob is not { } job || job.LocksTarget && !job.RemoteUnconfirmed ? null : job.Recovery switch
+    {
+        AiJobRecovery.CheckStatus => "Reconnect/check status", AiJobRecovery.RetryOutput => "Retry saving test result",
+        AiJobRecovery.GenerateAgain when !Busy => "Generate again", _ => null
+    };
+    private async Task RecoverAsync()
+    {
+        if (_commandBusy || CurrentJob is not { } job) return;
+        _commandBusy = true; _verificationError = null;
+        try
+        {
+            if (job.Recovery == AiJobRecovery.GenerateAgain)
+            {
+                var original = AiModelTestJobHandler.Read(job, await JobStore.ReadSnapshotAsync(job.Id));
+                _pending = AiModelTestJobHandler.Capture(Guid.NewGuid(), await Reviews.TabIdAsync(), original.Model, original.Settings, original.Advanced ? original.Test : null);
+                await PublishAsync();
+            }
+            else await Jobs.ResumeAsync(job.Id);
+        }
+        catch (WorkspaceStoreException e) { _verificationError = e.Message; }
+        finally { _commandBusy = false; }
+    }
+    private async Task CancelVerification()
+    {
+        if (_commandBusy || ActiveJob is not { } job) return;
+        _commandBusy = true;
+        try { await Jobs.CancelAsync(job.Id); }
+        catch (WorkspaceStoreException e) { _verificationError = e.Message; }
+        finally { _commandBusy = false; }
+    }
+
+    private ComfyTextModelVerification? SelectedVerification => _verifications
+        .Where(item => string.Equals(NormalizeForComparison(item.ComfyUrl), NormalizeForComparison(_comfyUrl), StringComparison.OrdinalIgnoreCase) &&
+            (_comfyVersion is null || string.Equals(item.ComfyVersion, _comfyVersion, StringComparison.Ordinal)) &&
+            string.Equals(item.Model, _comfyModel, StringComparison.Ordinal))
+        .MaxBy(item => item.VerifiedUtc);
+
+    private ComfyTextModelBenchmark? LatestBenchmark => _result?.PartialBenchmark ?? PreferredBenchmark(SelectedVerification);
+
+    private static ComfyTextModelBenchmark? PreferredBenchmark(ComfyTextModelVerification? verification) => verification?.Benchmarks?
+        .OrderBy(item => item.CustomPrompt).ThenByDescending(item => item.MeasuredUtc).FirstOrDefault();
+
+    private static string BenchmarkHeadline(ComfyTextModelBenchmark benchmark) => AdditionalVram(benchmark) is { } additionalVram
+        ? $"{FormatRate(benchmark)} · ~{FormatBytes(additionalVram)} additional device VRAM"
+        : FormatRate(benchmark);
+
+    private static string BenchmarkMemory(ComfyTextModelBenchmark benchmark)
+    {
+        if (benchmark.PeakVramUsedBytes is not { } peakVram || benchmark.VramTotalBytes is not { } totalVram)
+            return "ComfyUI did not expose usable device-memory statistics for this run. Token speed is still saved.";
+        var result = $"Peak device use {FormatBytes(peakVram)} / {FormatBytes(totalVram)}";
+        if (benchmark.PeakTorchAllocatedBytes is { } peak)
+            result += $" · peak active PyTorch allocation {FormatBytes(peak)}";
+        return result + ". These are approximate observations, not the model file size.";
+    }
+
+    private string BenchmarkEnvironment(ComfyTextModelBenchmark benchmark)
+    {
+        var version = SelectedVerification?.ComfyVersion;
+        var backend = string.IsNullOrWhiteSpace(version) ? "ComfyUI" : $"ComfyUI {version}";
+        return string.IsNullOrWhiteSpace(benchmark.DeviceName) ? $"with {backend}" : $"on {benchmark.DeviceName} with {backend}";
+    }
+
+    private static string CacheStatus(ComfyTextModelBenchmark benchmark) => benchmark.CacheClearConfirmed
+        ? "Lumibelle cleared ComfyUI's model cache first."
+        : "Lumibelle requested a cache clear, but could not confirm that memory had settled.";
+
+    private static long? AdditionalVram(ComfyTextModelBenchmark benchmark) =>
+        benchmark.PeakVramUsedBytes is { } peak && benchmark.BaselineVramUsedBytes is { } baseline
+            ? Math.Max(0, peak - baseline)
+            : null;
+
+    private static string FormatRate(ComfyTextModelBenchmark benchmark) => benchmark.TokensPerSecond is { } rate
+        ? $"{rate.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)} tokens/s"
+        : benchmark.GeneratedTokens is { } tokens ? $"{tokens:N0} tokens observed" : "speed unavailable";
+
+    private static string FormatBytes(long bytes) =>
+        $"{(bytes / 1024d / 1024d / 1024d).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)} GiB";
+
+    private static string NormalizeForComparison(string value)
+    {
+        try { return AiProviderRegistry.NormalizeComfyUrl(value); }
+        catch (UriFormatException) { return value.Trim().TrimEnd('/'); }
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        _disposed = true; Jobs.Changed -= Changed;
+        return ValueTask.CompletedTask;
+    }
+}

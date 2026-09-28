@@ -1,0 +1,46 @@
+@using System.Globalization
+@inject IAiJobStore Store
+<div class="openrouter-job-usage">
+    <p>Reported cost · @(_usage?.Cost is { } cost ? "$" + cost.ToString("0.############################", CultureInfo.InvariantCulture) + " USD" : Job.State is AiJobState.Waiting or AiJobState.Running ? "Pending" : "Cost not reported")</p>
+    @if (_usage is { } usage)
+    {
+        <details><summary>Usage details</summary>
+            <p>@Count(usage.InputTokens) input · @Count(usage.OutputTokens) output tokens</p>
+            @if (usage.ReasoningTokens is { } reasoning) { <p>@Count(reasoning) reasoning tokens (included in output)</p> }
+            @if (usage.CachedTokens is { } cached) { <p>@Count(cached) cached input tokens</p> }
+            @if (usage.Model is not null) { <p>Model returned: @usage.Model</p> }
+            @if (usage.Provider is not null) { <p>Provider: @usage.Provider</p> }
+            @if (usage.GenerationId is not null) { <p>Generation: @usage.GenerationId</p> }
+            <p class="field-hint">Charge reported by OpenRouter. External provider charges for your own provider keys may be separate.</p>
+        </details>
+    }
+    @if (_error is not null) { <p class="field-error" role="status">@_error <button @onclick="Reload">Retry</button></p> }
+</div>
+@code {
+    [Parameter, EditorRequired] public AiJobHeader Job { get; set; } = null!;
+    private (Guid, long)? _loaded;
+    private OpenRouterRequestUsage? _usage;
+    private string? _error;
+    private static string Count(long? value) => value?.ToString("N0") ?? "Unreported";
+    protected override async Task OnParametersSetAsync()
+    {
+        var key = (Job.Id, Job.Version);
+        if (_loaded == key) return;
+        if (_loaded?.Item1 != Job.Id) _usage = null;
+        _loaded = key;
+        try
+        {
+            OpenRouterRequestUsage? usage;
+            if (Job.Kind is AiJobKind.TextBenchmark or AiJobKind.TextAdvancedTest)
+            {
+                var benchmark = (await Store.ReadArtifactAsync<AiModelTestJobResult>(Job.Id, AiJobArtifact.Result))?.OpenRouter;
+                usage = benchmark is null ? null : new(benchmark.GenerationId, benchmark.ResponseModel, benchmark.Provider,
+                    benchmark.InputTokens, benchmark.OutputTokens, benchmark.ReasoningTokens, benchmark.CachedTokens, benchmark.Cost);
+            }
+            else usage = (await Store.ReadArtifactAsync<AiTextJobResult>(Job.Id, AiJobArtifact.Result))?.OpenRouterUsage;
+            if (_loaded == key) { _usage = usage; _error = null; }
+        }
+        catch (WorkspaceStoreException) { if (_loaded == key) _error = "Unable to read saved usage."; }
+    }
+    private async Task Reload() { _loaded = null; await OnParametersSetAsync(); }
+}

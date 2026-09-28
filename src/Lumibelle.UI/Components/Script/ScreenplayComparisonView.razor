@@ -1,0 +1,24 @@
+@if (_changes is { } changes)
+{
+    @if (changes.Simplified) { <p class="field-hint">Large changes are highlighted by block to keep comparison responsive.</p> }
+    <div class="script-review-pages is-comparison">
+        <section class="review-page" aria-label="Original script"><h3>@(Historical ? "Captured before application" : "Original captured target")</h3><ComparedScreenplay Blocks="changes.Before" Before="true" /></section>
+        <section class="review-page proposed-page" aria-label="Proposed script"><h3>@(Historical ? "Applied writing at that time" : Operation == WritingOperation.Continue ? "Proposed addition" : "Proposed script")</h3><ComparedScreenplay Blocks="changes.After" /></section>
+    </div>
+}
+@code {
+    [Parameter, EditorRequired] public ScriptTarget Target { get; set; } = null!;
+    [Parameter, EditorRequired] public IReadOnlyList<ScriptBlock> Proposal { get; set; } = [];
+    [Parameter] public WritingOperation Operation { get; set; }
+    [Parameter] public bool Historical { get; set; }
+    private ScreenplayChanges? _changes;
+    private ScriptTarget? _lastTarget;
+    private IReadOnlyList<ScriptBlock>? _lastProposal;
+    private WritingOperation _lastOperation;
+    protected override void OnParametersSet()
+    {
+        if (ReferenceEquals(Target, _lastTarget) && ReferenceEquals(Proposal, _lastProposal) && Operation == _lastOperation) return;
+        _changes = ScreenplayComparison.Compare(Target, Proposal, Operation);
+        _lastTarget = Target; _lastProposal = Proposal; _lastOperation = Operation;
+    }
+}

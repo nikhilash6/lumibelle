@@ -1,0 +1,77 @@
+@inherits ProjectAwareComponent
+@inject IProjectStore Projects
+@inject IAiSettingsStore SettingsStore
+@inject IDialogService DialogService
+
+<PageTitle>Project settings · Lumibelle</PageTitle>
+@if (_loading)
+{
+    <div class="loading-state" role="status"><MudProgressCircular Indeterminate="true" Size="Size.Small" Color="Color.Primary" />Opening project settings…</div>
+}
+else if (_error is not null)
+{
+    <h1 class="state-title">Project settings couldn’t be opened</h1>
+    <MudButton Href="@(ProjectLink(Id, ""))">Back to project</MudButton>
+    <MudAlert Severity="Severity.Error" role="alert">@_error</MudAlert>
+    <MudButton OnClick="LoadAsync" Variant="Variant.Outlined">Try again</MudButton>
+}
+else if (_project is null)
+{
+    <h1 class="state-title">Project not found</h1>
+    <MudButton Href="/">Back to your projects</MudButton>
+}
+else
+{
+    <PagePosition ProjectId="Id" Studio="settings" />
+    <ProjectNavigation Project="_project" CurrentStudio="settings" />
+    <header class="settings-heading"><h1>Project settings</h1><p>Preferences for @_project.Name.</p></header>
+    <div class="project-settings-grid">
+        <section class="settings-card project-details" aria-labelledby="project-details-heading">
+            <h2 id="project-details-heading">Project details</h2>
+            <p class="project-settings-name">@_project.Name</p>
+            @if (!string.IsNullOrWhiteSpace(_project.Description)) { <p class="project-synopsis">@_project.Description</p> }
+            <MudButton OnClick="EditProjectAsync" Disabled="_dialogOpen" Variant="Variant.Outlined" StartIcon="@Icons.Material.Outlined.Edit">Edit project</MudButton>
+        </section>
+        <ProjectStoragePanel @key="(Id, nameof(ProjectStoragePanel))" Project="_project" />
+        <ProjectLanguagesPanel @key="(Id, nameof(ProjectLanguagesPanel))" ProjectId="Id" />
+        <ProjectLoraVisibility @key="Id" ProjectId="Id" Settings="_settings" />
+        <section class="settings-card" aria-labelledby="project-text-heading"><h2 id="project-text-heading">Text assistance</h2><p>The default model for every text assistant in this project. Individual requests can use another model.</p><TextModelPicker ProjectId="Id" DefaultEditor="true" /></section>
+        <ProjectVideoDefaults @key="(Id, nameof(ProjectVideoDefaults))" Project="_project" Changed="p => _project = p" />
+        <section class="settings-card" aria-labelledby="project-image-heading"><h2 id="project-image-heading">Images</h2><p>The default model for creating and editing images in this project.</p><ProjectImageDefaultPicker @key="Id" ProjectId="Id" /></section>
+    </div>
+}
+
+@code {
+    [Parameter] public Guid Id { get; set; }
+    private ProjectInfo? _project;
+    private AiSettings _settings = new();
+    private bool _loading = true, _dialogOpen;
+    private string? _error;
+    protected override Task OnParametersSetAsync() => LoadAsync();
+    private async Task LoadAsync()
+    {
+        var requestedId = Id; _loading = true; _error = null; _project = null;
+        try
+        {
+            var project = await Projects.GetAsync(requestedId);
+            var settings = project is null ? new AiSettings() : await SettingsStore.LoadAsync();
+            if (requestedId == Id) { _project = project; _settings = settings; }
+        }
+        catch (Exception e) when (e is ProjectStoreException or WorkspaceStoreException) { if (requestedId == Id) _error = e.Message; }
+        finally { if (requestedId == Id) _loading = false; }
+    }
+    private async Task EditProjectAsync()
+    {
+        if (_dialogOpen || _project is null) return;
+        var original = _project; _dialogOpen = true;
+        try
+        {
+            var dialog = await DialogService.ShowAsync<ProjectDialog>("Edit project",
+                new DialogParameters { [nameof(ProjectDialog.Project)] = original },
+                new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
+            var result = await dialog.Result;
+            if (Id == original.Id && result is { Canceled: false, Data: ProjectInfo updated }) _project = updated;
+        }
+        finally { _dialogOpen = false; }
+    }
+}

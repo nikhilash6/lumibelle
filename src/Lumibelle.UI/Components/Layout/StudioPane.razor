@@ -1,0 +1,14 @@
+<section class="workspace-pane @Class" aria-label="@Label" @attributes="AdditionalAttributes">
+    @if (Header is not null) { <header class="workspace-pane-header">@Header</header> }
+    <div class="workspace-pane-body" tabindex="-1">@ChildContent</div>
+    @if (Footer is not null) { <footer class="workspace-pane-footer">@Footer</footer> }
+</section>
+
+@code {
+    [Parameter] public string Class { get; set; } = "";
+    [Parameter(CaptureUnmatchedValues = true)] public Dictionary<string, object>? AdditionalAttributes { get; set; }
+    [Parameter] public string Label { get; set; } = "";
+    [Parameter] public RenderFragment? Header { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+    [Parameter] public RenderFragment? Footer { get; set; }
+}

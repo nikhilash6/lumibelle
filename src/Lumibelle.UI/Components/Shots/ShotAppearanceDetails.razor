@@ -1,0 +1,13 @@
+@if (Appearances.Count > 0)
+{
+    <details class="submitted-looks"><summary>Submitted looks</summary>
+        @foreach (var appearance in Appearances)
+        {
+            <p><strong>@appearance.Start.AssetName · @appearance.Start.LookName @(appearance.End is { } end ? " → " + end.LookName : "")</strong></p>
+            <p class="preservation-text">Shared identity: @appearance.Start.IdentityNotes @appearance.Start.IdentityGuidance</p>
+            <p class="preservation-text">@(appearance.End is null ? "Current" : "Starting") look: @appearance.Start.Description @appearance.Start.PreservationGuidance</p>
+            @if (appearance.End is { } ending) { <p class="preservation-text">Ending look: @ending.Description @ending.PreservationGuidance</p> }
+        }
+    </details>
+}
+@code { [Parameter] public IReadOnlyList<ShotAppearanceContext> Appearances { get; set; } = []; }

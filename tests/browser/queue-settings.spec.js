@@ -1,0 +1,33 @@
+import { test, expect } from './fixtures.js';
+
+test('queue concurrency saves independently, cancels drafts and fits mobile', async ({ page }) => {
+  await page.goto('/settings/ai');
+  await expect(page.locator('h1')).toBeFocused();
+  await page.getByRole('tab', { name: 'Connections', exact: true }).click();
+  const server = page.locator('#comfy-url');
+  const originalServer = await server.inputValue();
+  await server.fill('http://unsaved.example:8188');
+  await page.getByRole('tab', { name: 'OpenRouter', exact: true }).click();
+  const concurrency = page.getByLabel('Concurrent requests', { exact: true });
+  await concurrency.fill('3');
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(concurrency).toHaveValue('1');
+  await concurrency.focus();
+  await page.keyboard.press('ArrowUp');
+  await expect(concurrency).toHaveValue('2');
+  await page.getByRole('button', { name: 'Save connection', exact: true }).click();
+  await expect(page.getByText('OpenRouter connection saved.', { exact: true })).toBeVisible();
+  await page.reload();
+  await expect(page.locator('h1')).toBeFocused();
+  await page.getByRole('tab', { name: 'ComfyUI', exact: true }).click();
+  await expect(server).toHaveValue(originalServer);
+  await page.getByRole('tab', { name: 'OpenRouter', exact: true }).click();
+  await expect(concurrency).toHaveValue('2');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(concurrency).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+  await page.screenshot({ path: 'test-results/queue-settings-mobile.png', fullPage: true });
+  await concurrency.fill('1');
+  await page.getByRole('button', { name: 'Save connection', exact: true }).click();
+  await expect(page.getByText('OpenRouter connection saved.', { exact: true })).toBeVisible();
+});

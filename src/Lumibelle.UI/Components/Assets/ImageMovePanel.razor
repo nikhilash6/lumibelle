@@ -1,0 +1,59 @@
+<section class="image-move-panel" aria-label="Move images to another asset">
+    <p>@Images.Count image@(Images.Count == 1 ? "" : "s") from <strong>@Source.Name</strong></p>
+    <div class="move-thumbnails">@foreach (var image in Images.Take(12)) { <img src="@($"/media/projects/{Library.ProjectId}/assets/{Source.Id}/images/{image.Id}")" alt="@(image.Name ?? Source.Name)" /> }</div>
+    <fieldset disabled="@(_busy || _captured is not null)">
+        <label>Destination asset<select @ref="_destinationInput" @bind="_destination" @bind:after="() => _look = null"><option value="">Choose an asset…</option>@foreach (var asset in Library.Assets.Where(a => a.Id != Source.Id).OrderBy(a => a.Name)) { <option value="@asset.Id">@asset.Name</option> }<option value="new">Create a new asset…</option></select></label>
+        @if (_destination == "new")
+        {
+            <label>New asset name<input maxlength="240" @bind="_name" @bind:event="oninput" /></label>
+            <label>Asset category<select @bind="_category">@foreach (var category in Enum.GetValues<AssetCategory>()) { <option value="@category">@category</option> }</select></label>
+        }
+        else if (DestinationAsset?.Category == AssetCategory.Character)
+        {
+            <label>Destination look<select @bind="_look"><option value="">General / unassigned</option>@foreach (var look in DestinationAsset.Looks.Where(l => !l.Archived)) { <option value="@look.Id">@look.Name</option> }</select></label>
+        }
+    </fieldset>
+    <p class="field-hint">Keeps image quality, tags, and history. Existing shot references must be reselected from the destination before generating again.</p>
+    @if (_error is not null) { <p role="alert">@_error</p> }
+    <div class="dialog-actions">
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@(_busy || !Valid)" OnClick="() => Move(false)">@(_busy ? "Moving…" : _captured is not null ? "Retry move" : "Move")</MudButton>
+        @if (Images.Count == 1) { <MudButton Variant="Variant.Outlined" Disabled="@(_busy || !Valid)" OnClick="() => Move(true)">Move and edit</MudButton> }
+        @if (_captured is not null && !_busy) { <MudButton OnClick="() => { _captured = null; _error = null; }">Change destination</MudButton> }
+        <MudButton Disabled="@_busy" OnClick="Cancelled">Cancel</MudButton>
+    </div>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public AssetLibrary Library { get; set; } = default!;
+    [Parameter, EditorRequired] public ReferenceAsset Source { get; set; } = default!;
+    [Parameter, EditorRequired] public IReadOnlyList<AssetImage> Images { get; set; } = [];
+    [Parameter, EditorRequired] public Func<ImageDestination, Task<SavedAssetImage>> Save { get; set; } = default!;
+    [Parameter] public EventCallback<SavedAssetImage> Moved { get; set; }
+    [Parameter] public EventCallback<SavedAssetImage> EditRequested { get; set; }
+    [Parameter] public EventCallback Cancelled { get; set; }
+    private string _destination = "", _name = "";
+    private Guid? _look;
+    private AssetCategory _category = AssetCategory.Reference;
+    private ImageDestination? _captured;
+    private bool _busy;
+    private string? _error;
+    private ElementReference _destinationInput;
+    private ReferenceAsset? DestinationAsset => Guid.TryParse(_destination, out var id) ? Library.Assets.FirstOrDefault(a => a.Id == id) : null;
+    private bool Valid => Images.Count > 0 && (_captured is not null || _destination == "new" && !string.IsNullOrWhiteSpace(_name) || DestinationAsset is not null);
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    { if (firstRender) try { await _destinationInput.FocusAsync(); } catch (JSDisconnectedException) { } }
+    private async Task Move(bool edit)
+    {
+        if (_busy || !Valid) return;
+        _captured ??= new(_destination == "new" ? Guid.NewGuid() : Guid.Parse(_destination), _look,
+            _destination == "new" ? _name : null, _category);
+        _busy = true; _error = null;
+        try
+        {
+            var result = await Save(_captured);
+            if (edit) await EditRequested.InvokeAsync(result); else await Moved.InvokeAsync(result);
+        }
+        catch (Exception e) when (e is WorkspaceStoreException or IOException) { _error = e.Message; }
+        finally { _busy = false; }
+    }
+}

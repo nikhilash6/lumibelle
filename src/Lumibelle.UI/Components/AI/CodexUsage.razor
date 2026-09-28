@@ -1,0 +1,119 @@
+@inject IServiceProvider Services
+@implements IAsyncDisposable
+@if (Settings.Enabled)
+{
+    <section class="codex-usage" aria-label="Shared Codex allowance" @ref="_element">
+        <div class="field-label-help"><strong>Codex allowance</strong><HelpHint Label="Shared allowance" Text="Shared across the signed-in account. Only windows reported by the CLI are shown; these can differ by account and model. Bucket names come from Codex. Percentages are reported allowance, not a count of remaining generations. For information only: requests are not blocked by these readings. If Codex reports that a usage limit was reached, the queue pauses until you resume it. No credits are purchased and no resets are consumed." /></div>
+        @if (_client?.Connection is { Success: true, ReportsAllowance: false } other)
+        {
+            <p class="field-hint">No plan allowance to show. Codex is set up with @other.AccountLabel, which is billed or limited by that account.</p>
+        }
+        else if (Compact)
+        {
+            <p class="field-hint">@Summary</p>
+        }
+        else
+        {
+            @foreach (var limit in Usage?.Limits ?? [])
+            {
+                <div class="codex-usage-bucket"><strong>@BucketName(limit)</strong>
+                    @foreach (var window in Windows(limit))
+                    {
+                        <div class="codex-usage-window">
+                            <p><span class="codex-window-label">@WindowName(window)</span> · @window.UsedPercent.ToString("0.#")% used · @window.RemainingPercent.ToString("0.#")% remaining</p>
+                            <p class="field-hint">@ResetLabel(window)</p>
+                        </div>
+                    }
+                    @if (!Windows(limit).Any()) { <p class="field-hint">No usage windows reported for this bucket.</p> }
+                </div>
+            }
+            @if (Usage?.Limits.Count is not > 0) { <p class="field-hint">@NoUsageMessage</p> }
+            @if (Usage is { } usage) { <p class="field-hint">@(usage.Error is null ? "Last checked:" : "Last reading · stale:") @usage.CheckedUtc.ToLocalTime().ToString("g") · local time</p> }
+        }
+        @if (_error is not null || Usage?.Error is not null) { <p role="status" class="field-error">@(_error ?? Usage?.Error)</p> }
+        <button type="button" class="small-button" disabled="@_busy" @onclick="() => RefreshAsync(true)">@(_busy ? "Refreshing allowance…" : "Refresh allowance")</button>
+    </section>
+}
+@code {
+    [Parameter] public CodexSettings Settings { get; set; } = new();
+    [Parameter] public bool Compact { get; set; }
+    [Parameter] public bool RefreshOnOpen { get; set; }
+    [Parameter] public bool ObserveVisibility { get; set; }
+    private ElementReference _element;
+    private IJSObjectReference? _visibility;
+    private ICodexClient? _client;
+    private lumibelle.Models.CodexUsage? _displayUsage;
+    private lumibelle.Models.CodexUsage? Usage => ObserveVisibility ? _displayUsage : _client?.Connection?.Usage;
+    private string Summary => Usage?.Limits.Count is > 0
+        ? string.Join(" · ", Usage.Limits.Select(l => BucketName(l) + ": " + (Windows(l).Any()
+            ? string.Join(", ", Windows(l).Select(w => $"{WindowName(w)} {w.RemainingPercent:0.#}% remaining"))
+            : "no usage windows reported")))
+        : NoUsageMessage;
+    private string NoUsageMessage => Usage is null && _client?.Connection?.Success != true
+        ? "Allowance not checked. Check the connection or refresh allowance."
+        : "Usage data unavailable. Refresh allowance to try again.";
+    private static IEnumerable<CodexWindow> Windows(CodexLimit limit) => new[] { limit.Primary, limit.Secondary }.OfType<CodexWindow>();
+    private static string BucketName(CodexLimit limit) => limit.Name == "codex" ? "Codex" : limit.Name;
+    private static string WindowName(CodexWindow window) => window.WindowDurationMins switch
+    {
+        10080 => "Weekly",
+        1440 => "Daily",
+        > 0 and var minutes when minutes % 1440 == 0 => $"{minutes / 1440}-day",
+        > 0 and var minutes when minutes % 60 == 0 => $"{minutes / 60}-hour",
+        > 0 and var minutes => $"{minutes}-minute",
+        _ => "Window length not reported"
+    };
+    private static string ResetLabel(CodexWindow window) => window.ResetsAt is { } reset
+        ? $"Resets {reset.ToLocalTime():g}"
+        : "Reset time not reported";
+    private readonly CancellationTokenSource _life = new();
+    private bool _busy;
+    private string? _error;
+    protected override void OnInitialized()
+    {
+        _client = Services.GetService<ICodexClient>();
+        if (_client is not null) _client.Changed += Changed;
+        _ = PollAsync();
+    }
+    private void Changed() { if (!_life.IsCancellationRequested) _ = InvokeAsync(StateHasChanged); }
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    { if (firstRender && RefreshOnOpen) { await RefreshAsync(false); if (!_life.IsCancellationRequested) StateHasChanged(); } }
+    private async Task PollAsync()
+    {
+        try { using var timer = new PeriodicTimer(TimeSpan.FromMinutes(1), Services.GetService<TimeProvider>() ?? TimeProvider.System); while (await timer.WaitForNextTickAsync(_life.Token)) await InvokeAsync(() => RefreshAsync(false)); }
+        catch (OperationCanceledException) { }
+    }
+    private async Task RefreshAsync(bool force)
+    {
+        if (_busy || !Settings.Enabled || _client is null) return;
+        _busy = true; _error = null;
+        try
+        {
+            if (ObserveVisibility)
+            {
+                _visibility ??= await Services.GetRequiredService<IJSRuntime>().InvokeAsync<IJSObjectReference>("import", lumibelle.UiAssets.Module("ai-jobs.js"));
+                if (!await _visibility.InvokeAsync<bool>("isReviewVisible", _element)) return;
+            }
+            if (Services.GetService<IAiSettingsStore>() is { } settings) Settings = (await settings.LoadAsync(_life.Token)).Codex;
+            if (!Settings.Enabled) return;
+            if (ObserveVisibility && Services.GetService<CodexAllowanceService>() is { } allowance)
+                _displayUsage = await allowance.ReadAsync(Settings, force, _life.Token);
+            else
+            {
+                if (_client.Connection?.Success != true) await _client.CheckAsync(Settings, _life.Token); else await _client.ReadUsageAsync(Settings, _life.Token);
+                _displayUsage = _client.Connection?.Usage;
+            }
+        }
+        catch (JSException) { }
+        catch (WorkspaceStoreException e) { _error = e.Message; }
+        catch (Exception e) when (e is AiGenerationException or OperationCanceledException) { if (!_life.IsCancellationRequested) _error = e is OperationCanceledException ? "Usage check timed out." : e.Message; }
+        finally { _busy = false; if (!_life.IsCancellationRequested) StateHasChanged(); }
+    }
+    public async ValueTask DisposeAsync()
+    {
+        if (_client is not null) _client.Changed -= Changed;
+        _life.Cancel();
+        if (_visibility is not null) try { await _visibility.DisposeAsync(); } catch (JSDisconnectedException) { }
+        _life.Dispose();
+    }
+}

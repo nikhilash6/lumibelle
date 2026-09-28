@@ -1,0 +1,23 @@
+{
+  "face.png": {
+    "sha256": "085adbb0e52f32213713dfa84d77a4c9a65148b790133393829580f1fb4eb4c8",
+    "bytes": 1969271
+  },
+  "outfit.png": {
+    "sha256": "ddef0267bd7def1aa929ad9e6239c32df50b723892da011c8574818bc7f1395f",
+    "bytes": 1856553
+  },
+  "voice.mp3": {
+    "sha256": "663f0b75d58440e2baf42cb6c4781cf16f7a49de1ff840cf0b21f7a3d4e3eabc",
+    "bytes": 50976
+  },
+  "voice.wav": {
+    "sha256": "60205e2a05361453984947854c32c7239253a87e84bc9305730e2c2c25da622e",
+    "bytes": 543788,
+    "start": 0,
+    "duration": 4.248,
+    "sample_rate": 32000,
+    "channels": 2,
+    "codec": "pcm_s16le"
+  }
+}

@@ -1,0 +1,10 @@
+<div class="media-details-actions">
+    @if (Status is not null) { <div class="media-details-action-status">@Status</div> }
+    @if (Tools is not null) { <div class="media-details-follow-up">@Tools</div> }
+    <div class="media-details-save-actions">@ChildContent</div>
+</div>
+@code {
+    [Parameter] public RenderFragment? Status { get; set; }
+    [Parameter] public RenderFragment? Tools { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+}

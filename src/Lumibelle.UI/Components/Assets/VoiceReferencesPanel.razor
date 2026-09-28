@@ -1,0 +1,223 @@
+@using Microsoft.AspNetCore.Components.Sections
+@implements IAsyncDisposable
+@inject IVoiceStore Store
+@inject IReferenceVideoStore ReelMedia
+@inject IAiSettingsStore Settings
+@inject IJSRuntime JS
+
+@if (Inline && !Embedded)
+{
+    <div class="voice-library"><h2>Voice references</h2><p class="field-hint">Recordings guide voice identity in Shots. Choose a 1–15 second excerpt to use for this character.</p>
+    <button class="voice-open" @onclick="() => _open = true" disabled="@Disabled">Add voice reference</button>
+    @if (Voices.Count == 0) { <p>No recordings yet.</p> }
+    @foreach (var voice in Voices) {
+        <article class="voice-reference" @key="voice.Id"><strong>@voice.Name</strong><small>@voice.ExcerptDuration.ToString("0.##") second excerpt</small>
+            <audio data-excerpt-start="@N(voice.Start)" data-excerpt-end="@N(voice.Start + voice.ExcerptDuration)" controls preload="none" src="@SavedUrl(voice.Id)" aria-label="@($"Play {voice.Name}")"></audio>
+            <div><button disabled="@(_busy || Disabled)" @onclick="() => Edit(voice)">Edit excerpt</button><button disabled="@(_busy || Disabled)" @onclick="() => Discard(voice)">Move to Trash</button></div>
+        </article>
+    }
+    @if (!_open && _undo is not null) { <p role="status">Voice moved to Trash. <button disabled="@_busy" @onclick="Undo">Undo</button></p> }
+    @if (!_open && _error is not null) { <p role="alert">@_error</p> }
+    </div>
+}
+else if (!Embedded) { <button class="voice-open" @onclick="() => _open = true" disabled="@Disabled">@(Voices.Count == 0 ? "Add voice reference" : $"Voice · {Voices.Count}")</button> }
+<InlineDialog Visible="_open" VisibleChanged="VisibilityChanged" Options="Options" Class="voice-dialog media-details-dialog">
+    <TitleContent><DialogHeader Title="@(_editing is not null ? "Voice details" : _draft is not null ? "Save voice" : $"{CharacterName} · Voice references")" CloseLabel="Close voice details" CloseDisabled="_busy" Close="RequestCloseAsync" /></TitleContent>
+    <DialogContent>
+        <DialogEscape Pressed="RequestCloseAsync" />
+        <MediaDetailsFocus NameId="@(_rename ? _editing?.Id : null)" Handled="() => _rename = false" />
+        @if (_draft is not null || _editing is not null)
+        {
+            @VoiceFields
+        }
+        else
+        {
+            @foreach (var voice in Inline ? [] : Voices)
+            {
+                <article class="voice-reference" @key="voice.Id">
+                    <strong>@voice.Name</strong><small>@voice.ExcerptDuration.ToString("0.##") second excerpt · @voice.Start.ToString("0.##")–@((voice.Start + voice.ExcerptDuration).ToString("0.##"))</small>
+                    <audio data-excerpt-start="@N(voice.Start)" data-excerpt-end="@N(voice.Start + voice.ExcerptDuration)" controls preload="none" src="@SavedUrl(voice.Id)" aria-label="@($"Play {voice.Name}")"></audio>
+                    <div><button disabled="@(_busy || Disabled)" @onclick="() => Edit(voice)">Edit excerpt</button><button disabled="@(_busy || Disabled)" @onclick="() => Discard(voice)">Move to Trash</button></div>
+                </article>
+            }
+            <label class="import-button voice-upload">Choose file<InputFile OnChange="Upload" accept=".wav,.mp3,.flac,.m4a,.ogg" disabled="@(_busy || Disabled)" /></label>
+            <p class="field-hint">WAV, MP3, FLAC, M4A or Ogg · up to 50 MB. Next, listen and choose an excerpt.</p>
+        }
+        @if (_undo is not null) { <p role="status">Voice moved to Trash. <button disabled="@_busy" @onclick="Undo">Undo</button></p> }
+        @if (_notice is not null) { <p role="status">@_notice</p> }
+        @if (_busy) { <p role="status">@(_uploading ? "Preparing a playable recording…" : "Saving voice reference…")</p> }
+        @if (_error is not null) { <p role="alert">@_error</p> }
+    </DialogContent>
+    <DialogActions>
+        <MediaDetailsActions><Status>
+            @if (_confirmClose) { <span class="media-save-status" role="alert">Save your voice details before closing?</span> }
+            else if (EditingDirty) { <span role="status">Unsaved details</span> }
+        </Status><Tools>
+            @if (!_confirmClose && _editing is { } voice) { <MudButton Disabled="_busy" OnClick="() => ToggleDefault(voice)">@(DefaultId == voice.Id ? "Clear default voice" : "Make default voice")</MudButton> }
+        </Tools><ChildContent>
+        @if (_draft is not null || _editing is not null)
+        {
+            @if (_confirmClose) { <MudButton OnClick="CloseAsync" Disabled="_busy">Discard changes</MudButton><MudButton OnClick="() => _confirmClose = false" Disabled="_busy">Keep editing</MudButton> }
+            else { <MudButton OnClick="RequestCloseAsync" Disabled="_busy" Variant="Variant.Outlined">@(_draft is not null ? "Cancel" : "Close")</MudButton> }
+            <MudButton OnClick="SaveExcerpt" Disabled="@(_busy || Disabled || !ValidExcerpt || string.IsNullOrWhiteSpace(_name) || _draft is null && !EditingDirty)" Color="Color.Primary" Variant="Variant.Filled">@(_busy ? "Saving…" : _draft is not null ? "Save voice reference" : "Save details")</MudButton>
+        }
+        else if (_uploading) { <MudButton OnClick="() => _cancellation?.Cancel()">Cancel import</MudButton> }
+        else { <MudButton OnClick="CloseAsync" Disabled="_busy" Variant="Variant.Outlined">Close</MudButton> }
+        </ChildContent></MediaDetailsActions>
+    </DialogActions>
+</InlineDialog>
+@if (Embedded) {
+@if (_notice is not null) { <p role="status">@_notice</p> }
+@if (_undo is not null) { <p role="status">Voice moved to Trash. <button @onclick="Undo">Undo</button></p> }
+<SectionContent SectionId="ToolsSection"><StudioPane Class="voice-details-tools" Label="Voice reference"><ChildContent>
+    @if (SelectedVoice is { } selected) {
+        <audio controls preload="metadata" src="@SavedUrl(selected.Id)" aria-label="Listen to recording"></audio>
+        <p class="field-hint">@selected.ExcerptDuration.ToString("0.##") second excerpt. Open details to rename the recording or change its excerpt.</p>
+        <MudButton OnClick="() => Edit(selected)">Edit details</MudButton>
+    }
+    @if (_error is not null) { <p role="alert">@_error</p> }
+</ChildContent></StudioPane></SectionContent>
+}
+@code { private RenderFragment VoiceFields => @<div class="media-details-layout voice-import-editor">
+            <section class="media-details-preview voice-details-preview" aria-label="Voice preview">
+                <div class="voice-preview-stage"><MudIcon Icon="@Icons.Material.Outlined.GraphicEq" aria-hidden="true" />
+                <audio @ref="_player" @key="PreviewUrl" controls preload="metadata" src="@PreviewUrl" aria-label="Listen to recording"></audio>
+                </div>
+                <p class="field-hint">@Duration.ToString("0.##") seconds · @CharacterName</p>
+                @if ((_draft?.SourceReel ?? _editing?.SourceReel) is { } source) { <p class="field-hint">Saved from @source.Name. This is an independent audio recording.</p> }
+                <details class="media-details-disclosure"><summary>Using this voice</summary><p class="field-hint">Recordings guide a speaker’s voice in Shots. Their recorded words do not become script dialogue. Voices are shared across this character’s looks.</p></details>
+            </section>
+            <fieldset class="media-details-editor" disabled="@_busy">
+                <label>@(_editing is not null ? "Name" : "Recording name")<input data-media-name="@_editing?.Id" @bind="_name" @bind:event="oninput" maxlength="240" /></label>
+                @if (_editing is { } voice) { <p class="field-hint">@(DefaultId == voice.Id ? $"Default voice for {CharacterName}" : "Alternative recording")</p> }
+                <h3>Excerpt</h3>
+                <div class="voice-excerpt-fields"><label>Start (seconds)<input type="number" min="0" max="@N(Duration)" step="0.01" @bind="_start" @bind:event="oninput" disabled="@_busy" /></label><label>End (seconds)<input type="number" min="1" max="@N(Duration)" step="0.01" @bind="_end" @bind:event="oninput" disabled="@_busy" /></label></div>
+                <div class="voice-excerpt-actions"><button @onclick="UsePosition" disabled="@_busy">Start at player position</button><button @onclick="PlayExcerpt" disabled="@(_busy || !ValidExcerpt)">Play excerpt</button></div>
+                <p class="field-hint" role="status">@(ValidExcerpt ? $"Selected excerpt: {_end - _start:0.##} seconds." : "Choose a 1–15 second excerpt within the recording.")</p>
+                @if (_draft is not null) { <label class="media-details-check"><input type="checkbox" @bind="_makeDefault" disabled="@_busy" />Make @CharacterName’s default voice</label> }
+                @if (_draft is not null) { <p class="field-hint">This recording is not saved yet. Cancelling removes the import draft.</p> }
+            </fieldset></div>; }
+@code {
+    [Parameter] public bool Embedded { get; set; }
+    [Parameter] public Action<VoiceReferencesPanel>? RegisterPanel { get; set; }
+    protected override void OnInitialized() => RegisterPanel?.Invoke(this);
+    [Parameter] public object? ToolsSection { get; set; }
+    [Parameter] public Guid? SelectedVoiceId { get; set; }
+    private VoiceReference? SelectedVoice => Voices.FirstOrDefault(v => v.Id == SelectedVoiceId);
+    private bool _rename, _confirmClose, _makeDefault;
+    private string? _notice;
+    private Guid? DefaultId => Library.Assets.FirstOrDefault(a => a.Id == AssetId)?.DefaultVoiceId;
+    private bool EditingDirty => _editing is { } v && (v.Name != _name || v.Start != _start || v.ExcerptDuration != _end - _start);
+    [Parameter] public Guid ProjectId { get; set; }
+    [Parameter] public Guid AssetId { get; set; }
+    [Parameter, EditorRequired] public AssetLibrary Library { get; set; } = default!;
+    [Parameter] public bool Inline { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter, EditorRequired] public Func<Func<long, Task<AssetLibrary>>, Task> Mutate { get; set; } = default!;
+    private static readonly DialogOptions Options = new() { MaxWidth = MaxWidth.Large, FullWidth = true, CloseOnEscapeKey = false, BackdropClick = false };
+    private string _name = ""; private double _start, _end = 5; private bool _busy, _open, _uploading, _disposed; private string? _error;
+    private VoiceReference? _editing; private VoiceImportDraft? _draft; private Guid? _undo;
+    private IJSObjectReference? _module; private ElementReference _player; private CancellationTokenSource? _cancellation; private Task? _upload;
+    private List<VoiceReference> Voices => Library.Voices.Where(v => v.AssetId == AssetId).ToList();
+    private string CharacterName => Library.Assets.FirstOrDefault(a => a.Id == AssetId)?.Name ?? "Character";
+    private double Duration => _draft?.Duration ?? _editing?.Duration ?? 0;
+    private bool ValidExcerpt => double.IsFinite(_start) && double.IsFinite(_end) && _start >= 0 && _end <= Duration + .01 && _end - _start is >= 1 and <= 15;
+    private static string N(double v) => v.ToString(System.Globalization.CultureInfo.InvariantCulture);
+    private string SavedUrl(Guid id) => $"/media/projects/{ProjectId}/voice-previews/{id}";
+    private string PreviewUrl => _draft is { } d ? $"{SavedUrl(d.Id)}?staged=true" : _editing is { } v ? SavedUrl(v.Id) : "";
+    public void Edit(VoiceReference v, bool rename = false)
+    {
+        if (_busy) return;
+        if (_editing?.Id != v.Id) { _editing = v with { }; _name = v.Name; _start = v.Start; _end = v.Start + v.ExcerptDuration; _error = null; }
+        _open = true; _rename = rename; _confirmClose = false; StateHasChanged();
+    }
+    private async Task<IJSObjectReference> Module() => _module ??= await JS.InvokeAsync<IJSObjectReference>("import", lumibelle.UiAssets.Module("voice-preview.js"));
+    private async Task PlayExcerpt() { try { await (await Module()).InvokeVoidAsync("playExcerpt", _player, _start, _end); } catch (JSException) { _error = "Couldn’t play the excerpt. Check the recording preview and try again."; } }
+    private async Task UsePosition() { try { _start = Math.Clamp(await (await Module()).InvokeAsync<double>("position", _player), 0, Math.Max(0, Duration - 1)); _end = Math.Min(Duration, _start + 5); } catch (JSException) { _error = "Load the recording in the player first."; } }
+    private async Task ResetAsync()
+    {
+        if (_module is not null) try { await _module.InvokeVoidAsync("stop", _player); } catch (JSException) { }
+        if (_draft is { } d) await Store.CancelVoiceImportAsync(ProjectId, d.Id);
+        _draft = null; _editing = null; _name = ""; _start = 0; _end = 5; _error = null; _confirmClose = false; _rename = false; _makeDefault = false;
+    }
+    private async Task CloseAsync() { if (_busy) return; await ResetAsync(); _open = false; }
+    private Task RequestCloseAsync()
+    {
+        if (_busy) return Task.CompletedTask;
+        if (EditingDirty) { _confirmClose = true; return Task.CompletedTask; }
+        return CloseAsync();
+    }
+    private Task VisibilityChanged(bool visible) => visible ? Task.CompletedTask : RequestCloseAsync();
+    private async Task Run(Func<Task> action)
+    { if (_busy || Disabled) return; _busy = true; _error = null; try { await action(); } catch (OperationCanceledException) { _error = "Import cancelled. Nothing was saved."; } catch (Exception e) { _error = e.Message; } finally { _busy = false; } }
+    private Task Upload(InputFileChangeEventArgs args) { if (_busy) return Task.CompletedTask; return _upload = Run(async () =>
+    {
+        _uploading = true; _cancellation = new();
+        try
+        {
+            var file = args.File; var settings = await Settings.LoadAsync(_cancellation.Token);
+            await using var stream = file.OpenReadStream(50L * 1024 * 1024, _cancellation.Token);
+            _draft = await Store.StageVoiceAsync(ProjectId, AssetId, stream, file.Name, settings.H3, _cancellation.Token);
+            _name = _draft.SuggestedName.Length > 240 ? _draft.SuggestedName[..240] : _draft.SuggestedName; _start = 0; _end = Math.Min(5, _draft.Duration);
+        }
+        finally { _uploading = false; _cancellation.Dispose(); _cancellation = null; }
+    }); }
+    public Task ToggleDefault(VoiceReference voice) => Run(async () => {
+        await SaveEdited(); var next = DefaultId == voice.Id ? (Guid?)null : voice.Id;
+        await Mutate(revision => Store.SetDefaultVoiceAsync(ProjectId, voice.AssetId, next, revision));
+        _notice = next is null ? "Default voice cleared." : $"{voice.Name} is now {CharacterName}’s default voice. Saved setups keep their selection.";
+    });
+    public Task FromReel(AssetReferenceReel reel) {
+        _open = true; StateHasChanged();
+        return _upload = Run(async () => {
+            await ResetAsync(); _uploading = true; _cancellation = new();
+            try {
+                var settings = await Settings.LoadAsync(_cancellation.Token);
+                await using var media = await ReelMedia.OpenAsync(ProjectId, reel.Media.Id, _cancellation.Token) ?? throw new WorkspaceStoreException("This reel is unavailable.");
+                _draft = await Store.StageReelVoiceAsync(ProjectId, reel.Id, media.Content, settings.H3, _cancellation.Token);
+                _name = _draft.SuggestedName.Length > 240 ? _draft.SuggestedName[..240] : _draft.SuggestedName;
+                _start = 0; _end = Math.Min(15, _draft.Duration); _makeDefault = false;
+            } finally { _uploading = false; _cancellation.Dispose(); _cancellation = null; }
+        });
+    }
+    public void OpenImport() { _open = true; _editing = null; }
+    private async Task SaveEdited()
+    {
+        if (_editing is not { } voice || voice.Name == _name && voice.Start == _start && voice.ExcerptDuration == _end - _start) return;
+        if (!ValidExcerpt || string.IsNullOrWhiteSpace(_name)) throw new WorkspaceStoreException("Choose a name and a valid 1–15 second excerpt before leaving this recording.");
+        var name = _name.Trim(); var start = _start; var duration = _end - _start;
+        VoiceReference? updated = null;
+        await Mutate(revision => {
+            var current = Library.Voices.FirstOrDefault(v => v.Id == voice.Id) ?? throw new WorkspaceStoreException("This recording was removed. Your edits are still here.");
+            if (current.AssetId != voice.AssetId) throw new WorkspaceStoreException("This recording was moved. Your edits are retained; reopen its details in the destination asset.");
+            if (name != voice.Name && current.Name != voice.Name && current.Name != name ||
+                start != voice.Start && current.Start != voice.Start && current.Start != start ||
+                duration != voice.ExcerptDuration && current.ExcerptDuration != voice.ExcerptDuration && current.ExcerptDuration != duration)
+                throw new WorkspaceStoreException("This recording changed in another editor. Your edits are still here; review the saved recording before replacing them.");
+            updated = current with { Name = name != voice.Name ? name : current.Name, Start = start != voice.Start ? start : current.Start,
+                ExcerptDuration = duration != voice.ExcerptDuration ? duration : current.ExcerptDuration };
+            return Store.UpdateVoiceAsync(ProjectId, updated, revision);
+        });
+        _editing = updated;
+        // A manual save can overlap typing; only refresh fields that still match the capture.
+        if (_name.Trim() == name) _name = updated!.Name;
+        if (_start == start && _end - _start == duration) { _start = updated!.Start; _end = updated.Start + updated.ExcerptDuration; }
+    }
+    public async Task<bool> FlushAsync() { if (_busy) return false; try { await SaveEdited(); return true; } catch (Exception e) { _error = e.Message; return false; } }
+    public void ClearEditing() { _editing = null; _open = false; _confirmClose = false; }
+    private Task SaveExcerpt() => Run(async () =>
+    {
+        if (!ValidExcerpt) return;
+        if (_draft is { } draft) await Mutate(revision => Store.CommitVoiceAsync(ProjectId, draft.Id, _name, _start, _end, _makeDefault, revision));
+        else if (_editing is not null) await SaveEdited();
+        await ResetAsync(); if (Inline || Embedded) _open = false;
+    });
+    public Task Discard(VoiceReference voice) => Run(async () => { var wasDefault = DefaultId == voice.Id; await Mutate(async revision => { var saved = await Store.DiscardVoiceAsync(ProjectId, voice.Id, revision); _undo = saved.VoiceTrash.Single(t => t.Voice.Id == voice.Id).Id; return saved; }); if (wasDefault) _notice = "The character default voice was cleared. Saved setups keep their voice selection."; });
+    private Task Undo() => Run(async () => { await Mutate(revision => Store.RestoreVoicesAsync(ProjectId, [_undo!.Value], revision)); _undo = null; });
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed) return; _disposed = true; _cancellation?.Cancel(); if (_upload is not null) await _upload;
+        if (_draft is { } draft) await Store.CancelVoiceImportAsync(ProjectId, draft.Id);
+        if (_module is not null) try { await _module.DisposeAsync(); } catch (JSDisconnectedException) { }
+    }
+}

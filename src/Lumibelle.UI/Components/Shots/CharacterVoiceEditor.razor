@@ -1,0 +1,95 @@
+<section class="character-voice-editor" aria-label="Character voices">
+    <h3>Character voices · @ResolvedReferences.For(Shot).Audio.Count/3 audio inputs</h3>
+    <p class="field-hint">Choose one voice per character, shared across their visual references. Recorded words do not become dialogue.</p>
+    @foreach (var id in CharacterVoices.Owners(Shot, Library)) {
+        var choice = Shot.CharacterVoices?.FirstOrDefault(c => c.AssetId == id);
+        var asset = Library.Assets.FirstOrDefault(a => a.Id == id) ?? new ReferenceAsset { Id = id, Category = AssetCategory.Character, Name = choice?.CharacterName ?? "Unavailable character" };
+        var audio = ResolvedReferences.For(Shot).Audio.FirstOrDefault(a => a.CharacterAssetId == id);
+        <fieldset @key="id" class="character-voice-row" disabled="@Disabled" data-character-voice="@id">
+            <legend>@asset.Name</legend>
+            <p class="character-voice-summary">Voice: @CharacterVoices.Label(choice) @if (audio is not null) { <strong> · &lt;Audio @audio.Number&gt;</strong> }</p>
+            @if (choice is null) { <p class="field-hint">Existing audio inputs stay unchanged until you choose a voice here.</p> }
+            <label>Voice for @asset.Name<select aria-label="Voice for @asset.Name" value="@Value(choice)" @onchange="e => Select(asset, e)">
+                <option value="" disabled>Choose voice…</option>
+                @if (choice is null) { <option value="legacy">Keep saved inputs</option> }
+                <option value="none">None</option>
+                @if (CharacterVoices.Default(asset, Library) is { } defaultVoice) { <option value="default">Character default · @defaultVoice.Name</option> }
+                @if (choice?.FromDefault == true && choice.Recording?.VoiceId != asset.DefaultVoiceId) { <option value="saved-default">Saved default · @choice.SourceName</option> }
+                <optgroup label="Saved recordings">@foreach (var voice in Library.Voices.OrderBy(v => v.AssetId != id).ThenBy(v => v.Name)) { <option value="voice:@voice.Id">@voice.Name · @Library.Assets.FirstOrDefault(a => a.Id == voice.AssetId)?.Name</option> }</optgroup>
+                <optgroup label="Reel audio">@foreach (var reel in Shot.Videos.Where(v => CharacterVoices.Owner(v, Library) == id && v.Media.HasAudio)) { <option value="reel:@reel.Id">@reel.Name</option> }</optgroup>
+            </select></label>
+            @if (choice is null) {
+                @foreach (var saved in Shot.Voices.Where(v => (v.CharacterAssetId ?? v.AssetId) == id)) {
+                    <p class="field-hint">@saved.Speaker · @(Library.Voices.FirstOrDefault(v => v.Id == saved.VoiceId)?.Name ?? "Unavailable recording") · @saved.Duration.ToString("0.##") seconds</p>
+                    <button @onclick="() => RemoveLegacy(saved)" disabled="@Disabled">Remove @saved.Speaker recording</button>
+                }
+            }
+            @if (choice is { Source: CharacterVoiceSource.Recording or CharacterVoiceSource.Reel }) {
+                <label>Dialogue speaker<select aria-label="Speaker for @asset.Name" value="@(choice.SpeakerConfirmed ? (choice.Speaker.Length == 0 ? "@vocalizations" : choice.Speaker) : "")" @onchange="e => Speaker(choice, e)">
+                    <option value="" disabled>Choose speaker…</option><option value="@@vocalizations">No dialogue · vocalizations</option>
+                    @foreach (var speaker in Shot.Dialogue.Select(d => d.Speaker).Distinct(StringComparer.OrdinalIgnoreCase)) { <option>@speaker</option> }
+                </select></label>
+                @if (choice.Source == CharacterVoiceSource.Recording && choice.Recording is { } recording) {
+                    @if (Library.Voices.Any(v => v.Id == recording.VoiceId)) {
+                        <audio controls preload="none" data-excerpt-start="@N(recording.Start)" data-excerpt-end="@N(recording.Start + recording.Duration)" src="@($"/media/projects/{Library.ProjectId}/voice-previews/{recording.VoiceId}")" aria-label="Voice preview for @asset.Name"></audio>
+                    } else { <p role="alert">Recording unavailable or in Trash. Restore it in Assets or choose another voice.</p> }
+                    @ExcerptFields(choice, recording.Start, recording.Duration)
+                }
+                @if (choice.Source == CharacterVoiceSource.Reel) {
+                    var reel = Shot.Videos.FirstOrDefault(v => v.Id == choice.ReelBindingId && v.Media.Id == choice.ReelMediaId);
+                    @if (reel is null) { <p role="alert">The selected audio reel was removed. Choose another voice or None.</p> }
+                    else if (reel.EffectiveVisuals == ReelVisuals.FullReel) {
+                        <p class="field-hint">Uses this full reel’s paired soundtrack prefix: @ReferenceVideos.EffectiveSeconds(reel.Media, Shot).ToString("0.###") seconds.</p>
+                        <audio controls preload="none" src="@ReferenceVideos.Url(Library.ProjectId, reel.Media.Id)" aria-label="Voice preview for @asset.Name"></audio>
+                    } else { @ExcerptFields(choice, ResolvedReferences.Excerpt(reel).Start, ResolvedReferences.Excerpt(reel).Duration)<ReelAudioPreview ProjectId="Library.ProjectId" Reel="reel" /> }
+                }
+            }
+        </fieldset>
+    }
+    <label>Add character voice<select aria-label="Add character voice" value="" @onchange="Add" disabled="@Disabled"><option value="">Choose character…</option>@foreach (var asset in Library.Assets.Where(a => a.Category == AssetCategory.Character && !CharacterVoices.Owners(Shot, Library).Contains(a.Id))) { <option value="@asset.Id">@asset.Name</option> }</select></label>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public Shot Shot { get; set; } = null!;
+    [Parameter, EditorRequired] public AssetLibrary Library { get; set; } = null!;
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public EventCallback Changed { get; set; }
+    private async Task RemoveLegacy(ShotVoiceBinding voice) { Shot.Voices.Remove(voice); await Changed.InvokeAsync(); }
+    private string Value(CharacterVoiceSelection? c) => c switch {
+        null => "legacy", { Source: CharacterVoiceSource.None } => "none", { Source: CharacterVoiceSource.Unselected } => "",
+        { FromDefault: true } => Library.Assets.FirstOrDefault(a => a.Id == c.AssetId)?.DefaultVoiceId == c.Recording?.VoiceId ? "default" : "saved-default",
+        { Source: CharacterVoiceSource.Recording } => $"voice:{c.Recording?.VoiceId}", _ => $"reel:{c.ReelBindingId}" };
+    private async Task Select(ReferenceAsset asset, ChangeEventArgs e) {
+        var value = e.Value?.ToString(); if (value is "legacy" or "saved-default" or null) return;
+        var c = ShotCopy.Of(Shot.CharacterVoices?.FirstOrDefault(v => v.AssetId == asset.Id) ?? CharacterVoices.Initial(Shot, asset, Library));
+        c.FromDefault = false; c.Recording = null; c.ReelBindingId = null; c.ReelMediaId = null; c.Excerpt = null; c.SourceName = "";
+        if (value == "none") c.Source = CharacterVoiceSource.None;
+        else if (value == "default" && CharacterVoices.Default(asset, Library) is { } def) CharacterVoices.SelectRecording(c, def, true);
+        else if (value.StartsWith("voice:") && Guid.TryParse(value[6..], out var voiceId) && Library.Voices.FirstOrDefault(v => v.Id == voiceId) is { } voice) CharacterVoices.SelectRecording(c, voice, false);
+        else if (value.StartsWith("reel:") && Guid.TryParse(value[5..], out var reelId) && Shot.Videos.FirstOrDefault(v => v.Id == reelId) is { } reel) {
+            c.Source = CharacterVoiceSource.Reel; c.ReelBindingId = reel.Id; c.ReelMediaId = reel.Media.Id; c.SourceName = reel.Name; c.Excerpt = new(0, Math.Min(15, reel.Media.Duration));
+        } else return;
+        CharacterVoices.Set(Shot, c, Library); await Changed.InvokeAsync();
+    }
+    private async Task Speaker(CharacterVoiceSelection choice, ChangeEventArgs e) {
+        var c = ShotCopy.Of(choice); c.Speaker = e.Value?.ToString() is "@vocalizations" ? "" : e.Value?.ToString() ?? "";
+        c.SpeakerConfirmed = true; CharacterVoices.Set(Shot, c, Library); await Changed.InvokeAsync();
+    }
+    private async Task Add(ChangeEventArgs e) {
+        if (Guid.TryParse(e.Value?.ToString(), out var id) && Library.Assets.FirstOrDefault(a => a.Id == id) is { } asset) {
+            CharacterVoices.Set(Shot, CharacterVoices.Initial(Shot, asset, Library), Library); await Changed.InvokeAsync();
+        }
+    }
+    private static string N(double v) => v.ToString(System.Globalization.CultureInfo.InvariantCulture);
+    private RenderFragment ExcerptFields(CharacterVoiceSelection c, double start, double duration) => @<div class="reel-audio-excerpt">
+        <label>Audio start (seconds)<input aria-label="Audio start for @c.CharacterName" type="number" min="0" step="0.01" value="@N(start)" @onchange="e => Excerpt(c, e, true)" /></label>
+        <label>Audio duration (seconds)<input aria-label="Audio duration for @c.CharacterName" type="number" min="1" max="15" step="0.01" value="@N(duration)" @onchange="e => Excerpt(c, e, false)" /></label>
+    </div>;
+    private async Task Excerpt(CharacterVoiceSelection choice, ChangeEventArgs e, bool start) {
+        if (!double.TryParse(e.Value?.ToString(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var value)) return;
+        var c = ShotCopy.Of(choice);
+        if (c.Recording is { } r) { if (start) r.Start = value; else r.Duration = value; }
+        else { var prior = c.Excerpt ?? new(0, 5); c.Excerpt = start ? prior with { Start = value } : prior with { Duration = value }; }
+        CharacterVoices.Set(Shot, c, Library); await Changed.InvokeAsync();
+    }
+}

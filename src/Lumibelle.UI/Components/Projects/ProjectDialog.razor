@@ -1,0 +1,17 @@
+<MudDialog DefaultFocus="DefaultFocus.FirstChild">
+    <TitleContent>
+        <DialogHeader Title="@(Dialog.Title ?? "Project")" Close="Cancel" CloseDisabled="_saving" CloseLabel="@($"Close {Dialog.Title?.ToLowerInvariant()}")">
+            <Summary>@(Project is null ? "Start with a name and an optional description." : "Update the name and description of your project.")</Summary>
+        </DialogHeader>
+    </TitleContent>
+    <DialogContent><ProjectForm Project="Project" ActionsSection="_actions" SavingChanged="value => _saving = value" OnSaved="Saved" OnCancel="Cancel" /></DialogContent>
+    <DialogActions><SectionOutlet SectionId="_actions" /></DialogActions>
+</MudDialog>
+@code {
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = default!;
+    [Parameter] public ProjectInfo? Project { get; set; }
+    private readonly object _actions = new();
+    private bool _saving;
+    private void Saved(ProjectInfo project) => Dialog.Close(DialogResult.Ok(project));
+    private void Cancel() { if (!_saving) Dialog.Cancel(); }
+}

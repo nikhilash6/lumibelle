@@ -1,0 +1,29 @@
+@if (Proposal.Category == AssetCategory.Character)
+{
+    <label class="extraction-field">Shared identity preservation<textarea rows="2" @bind="Proposal.PreservationGuidance" @bind:after="NotifyChanged" @bind:event="oninput"></textarea></label>
+    <section class="look-proposals" aria-label="Proposed looks">
+        @if (Proposal.Looks.Count > 0) { <h3>Character looks <span>@Proposal.Looks.Count</span></h3><p class="field-hint">Clothing and appearance variations for this character.</p> }
+        @foreach (var look in Proposal.Looks)
+        {
+            <details class="look-proposal" @key="look.Id">
+                <summary>@look.Name <span>@(look.Decision == ExtractionDecision.Create ? "To add" : look.Decision == ExtractionDecision.Merge ? "To update" : "Skipped")</span></summary>
+                <div class="look-proposal-fields">
+                    <div class="proposal-row">
+                        <label class="extraction-field">Look decision<select @bind="look.Decision" @bind:after="NotifyChanged"><option value="Create">Add as a new look</option><option value="Merge">Update an existing look</option><option value="Skip">Skip this look</option></select></label>
+                        <label class="extraction-field">Look name<input maxlength="200" @bind="look.Name" @bind:after="NotifyChanged" @bind:event="oninput" /></label>
+                    </div>
+                    @if (look.Decision == ExtractionDecision.Merge) { <label class="extraction-field">Existing look<select @bind="look.MatchedLookId" @bind:after="NotifyChanged"><option value="">Choose look…</option>@foreach (var existing in Target?.Looks ?? []) { <option value="@existing.Id">@existing.Name @(existing.Archived ? "· Archived" : "")</option> }</select></label> }
+                    <label class="extraction-field">Look description<textarea rows="3" maxlength="12000" @bind="look.Description" @bind:after="NotifyChanged" @bind:event="oninput"></textarea></label>
+                    <label class="extraction-field">Look preservation guidance<textarea rows="3" maxlength="12000" @bind="look.PreservationGuidance" @bind:after="NotifyChanged" @bind:event="oninput"></textarea></label>
+                    @if (look.Evidence.Count > 0) { <details class="proposal-evidence"><summary>Script evidence · @look.Evidence.Count</summary>@foreach (var evidence in look.Evidence) { <blockquote><strong>@evidence.Label</strong><span>@evidence.Excerpt</span></blockquote> }</details> }
+                </div>
+            </details>
+        }
+    </section>
+}
+@code {
+    [Parameter, EditorRequired] public AssetExtractionProposal Proposal { get; set; } = default!;
+    [Parameter] public EventCallback Changed { get; set; }
+    private Task NotifyChanged() => Changed.InvokeAsync();
+    [Parameter] public ReferenceAsset? Target { get; set; }
+}

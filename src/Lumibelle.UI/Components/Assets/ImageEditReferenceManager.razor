@@ -1,0 +1,124 @@
+@inject IServiceProvider Services
+<section class="manual-references image-edit-reference-manager">
+    @if (_regionTarget is null && _cropTarget is null) { <DialogEscape Pressed="Cancelled" /> }
+    <ImageReviewFocus Target="@_actionFocus" Handled="() => _actionFocus = null" />
+    <ReferencePicker Library="Library" Maximum="@(Maximum - _inputs.Count)" Excluded="_inputs" ImagePicked="Add"
+        SelectedCount="_inputs.Count" @bind-SelectedTab="_selectedTab">
+        <Selection>
+            <h3>Selected references · @_inputs.Count/@Maximum</h3><p class="field-hint">@(AllowOtherSourceAssets ? "Image 1 is the source for this recipe. Other images provide additional references." : "Image 1 is the source to edit and must belong to this asset. Other images provide additional references.")</p>
+            <ol class="manual-reference-list">
+            @foreach (var reference in _inputs) {
+                var index = _inputs.IndexOf(reference); var media = Find(reference);
+                <ReferenceSelectionRow @key="reference" Label="@($"Image {index + 1}")" Title="@($"Image {index + 1} · {(index == 0 ? "Source" : "Reference")}")"
+                    Name="@(media?.Name ?? Library.Assets.FirstOrDefault(a => a.Id == reference.AssetId)?.Name)"
+                    Status="@((_crops.ContainsKey(reference) ? "Cropped" : "Full image") + RegionStatus(reference))"
+                    Disabled="_restoring" First="@(index == 0)" Last="@(index == _inputs.Count - 1)" MoveUp="() => Move(index, -1)" MoveDown="() => Move(index, 1)" Remove="() => Remove(reference)">
+                    <Thumbnail><CropThumbnail Url="@Url(reference)" Width="@(media?.Width ?? 0)" Height="@(media?.Height ?? 0)" Crop="_crops.GetValueOrDefault(reference)" Label="@($"Image {index + 1}")" /></Thumbnail>
+                    <Actions>
+                        <button type="button" class="reference-crop-button @(_crops.ContainsKey(reference) ? "is-active" : "")" aria-label="@CropLabel(reference)" title="Crop image" aria-haspopup="dialog" disabled="@(media is null)" @onclick="() => _cropTarget = reference"><MudIcon Icon="@Icons.Material.Outlined.Crop" Size="Size.Small" aria-hidden="true" /></button>
+                        <button type="button" class="regional-edit-button @(HasEditArea(reference) ? "is-active" : "")" aria-label="@RegionLabel(reference, true)" title="@(index == 0 ? "Edit area" : "Edit area is only available for Image 1")" aria-haspopup="dialog" disabled="@(index > 0 || media is null)" @onclick="() => OpenRegion(reference, true)"><MudIcon Icon="@Icons.Material.Outlined.Edit" Size="Size.Small" aria-hidden="true" /></button>
+                        <button type="button" class="reference-protect-button @(HasProtection(reference) ? "is-active" : "")" aria-label="@RegionLabel(reference, false)" title="Protect areas" aria-haspopup="dialog" disabled="@(media is null)" @onclick="() => OpenRegion(reference, false)"><MudIcon Icon="@Icons.Material.Outlined.Shield" Size="Size.Small" aria-hidden="true" /></button>
+                        @if (index > 0 && _regions.TryGetValue(reference, out var invalidRegion) && invalidRegion.Mode == RegionalEditMode.Edit) {
+                            <button type="button" aria-label="Clear edit area for Image @(index + 1)" title="Clear edit area" @onclick="() => ClearEditArea(reference)"><MudIcon Icon="@Icons.Material.Outlined.LayersClear" Size="Size.Small" aria-hidden="true" /></button>
+                        }
+                    </Actions>
+                    <ChildContent>
+                        @if (media is null) { <p class="reference-issue" role="status">Restore or replace the unavailable reference.</p> }
+                        @if (RestoreTrashedImage is not null && AssetImageLocations.RecoverableTrash(Library, reference, Now) is { } trashed) { <p class="reference-trash-restore">In Trash · @trashed.Remaining(Now) <MudButton OnClick="() => Restore(trashed)" Disabled="_restoring" Variant="Variant.Outlined" Size="Size.Small">Restore image</MudButton></p> }
+                    </ChildContent>
+                </ReferenceSelectionRow>
+            }
+            </ol>
+            @if (Issue is { } issue) { <p role="alert" class="field-error">@issue</p> }
+            @if (_error is not null) { <p role="alert" class="field-error">@_error</p> }
+        </Selection>
+        <Footer><span>@_inputs.Count/@Maximum images · Changes apply together</span><MudButton OnClick="() => Cancelled.InvokeAsync()">Cancel</MudButton><MudButton OnClick="Apply" Disabled="@(Issue is not null)" Color="Color.Primary" Variant="Variant.Filled">Apply changes</MudButton></Footer>
+    </ReferencePicker>
+</section>
+@if (_regionTarget is { } target) {
+    <ImageRegionEditor @key="target" ProjectId="Library.ProjectId" Source="target" Initial="_regions.GetValueOrDefault(target)?.Copy()" Crop="_crops.GetValueOrDefault(target)" Aspect="@Aspect" Resolution="Resolution" QwenImage21="QwenImage21" EditArea="_editingArea" Label="@($"Image {_inputs.IndexOf(target) + 1}")" ReferenceOnly="@(target != _inputs.FirstOrDefault())" Applied="ApplyRegion" Cancelled="CloseRegion" />
+}
+@if (_cropTarget is { } cropTarget && Find(cropTarget) is { } cropMedia) {
+    <ImageInputCropDialog @key="cropTarget" Label="@($"Image {_inputs.IndexOf(cropTarget) + 1}")" Url="@Url(cropTarget)" Width="cropMedia.Width" Height="cropMedia.Height" InitialCrop="_crops.GetValueOrDefault(cropTarget)" Applied="ApplyCrop" Cancelled="CloseCrop" />
+}
+@code {
+    [Parameter, EditorRequired] public AssetLibrary Library { get; set; } = null!;
+    [Parameter] public Guid AssetId { get; set; }
+    [Parameter] public bool AllowOtherSourceAssets { get; set; }
+    [Parameter] public IReadOnlyList<AssetImageReference> Inputs { get; set; } = [];
+    [Parameter] public IReadOnlyList<AssetReferenceCrop> Crops { get; set; } = [];
+    [Parameter] public IReadOnlyList<RegionalImageSelection> Regions { get; set; } = [];
+    [Parameter] public string Aspect { get; set; } = "1:1";
+    [Parameter] public int Resolution { get; set; } = 1024;
+    [Parameter] public QwenImage21Options? QwenImage21 { get; set; }
+    [Parameter] public int Maximum { get; set; }
+    [Parameter] public EventCallback<ImageEditInputs> Applied { get; set; }
+    [Parameter] public EventCallback Cancelled { get; set; }
+    // Restores a trashed image by its Trash id and refreshes the host's Library.
+    [Parameter] public Func<Guid, Task>? RestoreTrashedImage { get; set; }
+    public sealed record ImageEditInputs(IReadOnlyList<AssetImageReference> Images, IReadOnlyList<AssetReferenceCrop> Crops, IReadOnlyList<RegionalImageSelection> Regions);
+    private readonly List<AssetImageReference> _inputs = [];
+    private readonly Dictionary<AssetImageReference, ImageCropRegion> _crops = [];
+    private readonly Dictionary<AssetImageReference, RegionalImageSelection> _regions = [];
+    private AssetImageReference? _regionTarget, _cropTarget;
+    private string? _actionFocus;
+    private bool _selectedTab, _editingArea, _restoring;
+    private DateTimeOffset Now => (Services.GetService<TimeProvider>() ?? TimeProvider.System).GetUtcNow();
+    private async Task Restore(TrashedImage trash)
+    {
+        if (_restoring || RestoreTrashedImage is null) return;
+        _restoring = true; _error = null;
+        try { await RestoreTrashedImage(trash.Id); }
+        catch (WorkspaceStoreException e) { _error = e.Message; }
+        finally { _restoring = false; }
+    }
+    private string? _error;
+    private string? Issue => _inputs.Count == 0 ? "Choose a source image." : _inputs.Count > Maximum ? $"This workflow supports at most {Maximum} images." :
+        !AllowOtherSourceAssets && _inputs[0].AssetId != AssetId ? "Image 1 must belong to the asset you are editing. Move one of its images first, or select that other asset in the library." :
+        _inputs.Any(i => Find(i) is null) ? "An image is no longer available. Restore it from Trash, or remove it and choose another, before applying." :
+        _inputs.Skip(1).Any(r => _regions.TryGetValue(r, out var region) && region.Mode == RegionalEditMode.Edit) ? "An edit area belongs to Image 1. Move that image back to the source position, or clear its edit area." : null;
+    protected override void OnInitialized() {
+        _inputs.AddRange(Inputs);
+        foreach (var crop in Crops) _crops[crop.Reference] = crop.Crop;
+        foreach (var region in Regions.Where(r => _inputs.Contains(r.Source)))
+            _regions[region.Source] = region.Copy() with { Context = _crops.GetValueOrDefault(region.Source) ?? new() { X = 0, Y = 0, Width = 1, Height = 1 } };
+    }
+    private AssetImage? Find(AssetImageReference r) => Library.Assets.FirstOrDefault(a => a.Id == r.AssetId)?.Images.FirstOrDefault(i => i.Id == r.ImageId);
+    private string Url(AssetImageReference r) => $"/media/projects/{Library.ProjectId}/assets/{r.AssetId}/images/{r.ImageId}";
+    private void Add(AssetImageReference r) {
+        if (_inputs.Contains(r)) return;
+        if (_inputs.Count < Maximum) _inputs.Add(r);
+        _error = null;
+    }
+    private void ChangeCrop(AssetImageReference reference, ImageCropRegion crop) {
+        if (crop.X == 0 && crop.Y == 0 && crop.Width == 1 && crop.Height == 1) _crops.Remove(reference); else _crops[reference] = crop;
+        if (_regions.TryGetValue(reference, out var region)) _regions[reference] = region with { Context = crop };
+    }
+    private bool HasEditArea(AssetImageReference reference) => _regions.TryGetValue(reference, out var region) && region.Mode == RegionalEditMode.Edit;
+    private bool HasProtection(AssetImageReference reference) => _regions.TryGetValue(reference, out var region) && region.Strokes.Any(s => s.Protect && !s.Erase);
+    private string RegionStatus(AssetImageReference reference) => (HasEditArea(reference) ? " · Edit active" : "") + (HasProtection(reference) ? " · Protect active" : "");
+    private string RegionLabel(AssetImageReference reference, bool editArea) => $"Image {_inputs.IndexOf(reference) + 1}: {(editArea ? "Edit area" : "Protect areas")}";
+    private void OpenRegion(AssetImageReference reference, bool editArea) {
+        if (editArea && reference != _inputs.FirstOrDefault()) return;
+        _regionTarget = reference; _editingArea = editArea;
+    }
+    private void ClearEditArea(AssetImageReference reference) {
+        if (!_regions.TryGetValue(reference, out var region)) return;
+        var protection = region.Strokes.Where(s => s.Protect).ToArray();
+        if (protection.Length == 0) _regions.Remove(reference);
+        else _regions[reference] = region with { Mode = RegionalEditMode.Protect, Strokes = protection };
+    }
+    private string CropLabel(AssetImageReference reference) => $"Image {_inputs.IndexOf(reference) + 1}: Crop image";
+    private void CloseCrop() { if (_cropTarget is { } target) _actionFocus = CropLabel(target); _cropTarget = null; }
+    private void ApplyCrop(ImageCropRegion crop) { if (_cropTarget is { } target) ChangeCrop(target, crop); CloseCrop(); }
+    private void CloseRegion() { if (_regionTarget is { } target) _actionFocus = RegionLabel(target, _editingArea); _regionTarget = null; }
+    private void ApplyRegion(RegionalImageSelection? selection) {
+        if (_regionTarget is not { } target) return;
+        if (selection is null) _regions.Remove(target);
+        else { _regions[target] = selection.Copy(); ChangeCrop(target, selection.Context); }
+        CloseRegion();
+    }
+    private void Move(int index, int offset) { var r = _inputs[index]; _inputs.RemoveAt(index); _inputs.Insert(index + offset, r); }
+    private void Remove(AssetImageReference r) { _inputs.Remove(r); _crops.Remove(r); _regions.Remove(r); }
+    private async Task Apply() { if (Issue is not null) return; try { await Applied.InvokeAsync(new(_inputs.ToArray(), _inputs.Where(_crops.ContainsKey).Select(r => new AssetReferenceCrop(r, _crops[r])).ToArray(), _inputs.Where(_regions.ContainsKey).Select(r => _regions[r].Copy()).ToArray())); } catch (Exception e) { _error = e.Message; } }
+}

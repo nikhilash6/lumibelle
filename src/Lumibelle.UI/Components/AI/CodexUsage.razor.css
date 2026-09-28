@@ -1,0 +1,6 @@
+.codex-usage { display: grid; gap: .65rem; }
+.codex-usage-bucket { display: grid; gap: .35rem; }
+.codex-usage-window { font-size: var(--lumi-font-size-ui); overflow-wrap: anywhere; }
+.codex-usage p { margin: 0; }
+.codex-window-label { font-weight: 600; }
+.codex-usage > button { justify-self: start; }

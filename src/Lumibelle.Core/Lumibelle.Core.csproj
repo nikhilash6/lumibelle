@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net10.0</TargetFramework><RootNamespace>lumibelle</RootNamespace></PropertyGroup>
+  <ItemGroup><InternalsVisibleTo Include="Lumibelle.Tests" /><PackageReference Include="Microsoft.Extensions.Hosting" /><PackageReference Include="Microsoft.Extensions.Http" /><PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" /><PackageReference Include="Microsoft.Extensions.AI" /><PackageReference Include="Microsoft.Extensions.AI.OpenAI" /><PackageReference Include="SixLabors.ImageSharp" /></ItemGroup>
+  <ItemGroup><InternalsVisibleTo Include="Lumibelle.BrowserHost" /></ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" />
+    <EmbeddedResource Include="Services/AI/PromptProfiles/*.txt" />
+    <EmbeddedResource Include="comfy_nodes/lumibelle_h3/*.py" />
+    <EmbeddedResource Include="comfy_nodes/lumibelle_h3/README.md" />
+  </ItemGroup>
+</Project>

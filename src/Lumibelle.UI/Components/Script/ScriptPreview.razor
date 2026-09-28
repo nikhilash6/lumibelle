@@ -1,0 +1,15 @@
+<div class="screenplay-preview">
+@foreach (var block in Blocks)
+{
+    <p class="script-block script-@block.Kind.ToString().ToLowerInvariant()">
+        @foreach (var span in block.Spans)
+        {
+            if (span.Bold && span.Italic) { <strong><em>@span.Text</em></strong> }
+            else if (span.Bold) { <strong>@span.Text</strong> }
+            else if (span.Italic) { <em>@span.Text</em> }
+            else { @span.Text }
+        }
+    </p>
+}
+</div>
+@code { [Parameter] public IReadOnlyList<ScriptBlock> Blocks { get; set; } = []; }

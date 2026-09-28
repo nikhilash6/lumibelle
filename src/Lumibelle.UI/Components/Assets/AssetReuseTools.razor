@@ -1,0 +1,75 @@
+@using lumibelle.Models
+@using lumibelle.Services.Assets
+@using MudBlazor
+@implements IAsyncDisposable
+
+@if (Reuse is not null)
+{
+<div class="asset-reuse-tools" @ref="_element">
+    <EditSessionRegistration Save="CanCloseAsync" />
+    <details>
+        <summary>Reuse &amp; clipboard</summary>
+        <div class="asset-reuse-actions">
+            <button type="button" disabled="@(Blocked || AssetId is null)" @onclick="() => DuplicateAsync(true)">Duplicate asset</button>
+            @if (Source is { Kind: not AssetReuseKind.Asset } selectedSource)
+            { <button type="button" disabled="@Blocked" @onclick="() => DuplicateAsync(false)">Duplicate selected @selectedSource.Kind.ToString().ToLowerInvariant()</button> }
+            <button type="button" data-reuse-copy disabled="@(Blocked || ClipboardDirty || Source is null)">Copy selected item</button>
+            @if (Source?.Kind == AssetReuseKind.Image)
+            { <button type="button" data-reuse-copy-pixels disabled="@Blocked">Copy image pixels</button> }
+            <button type="button" data-reuse-paste disabled="@Blocked">Paste</button>
+            <button type="button" disabled="@(Blocked || Source is null)" @onclick="OpenTransferAsync">Copy / move to project…</button>
+            <button type="button" disabled="@(Blocked || Source is null)" @onclick="OpenPublishAsync">Publish shared snapshot…</button>
+            <button type="button" disabled="@Blocked" @onclick="OpenSharedAsync">Shared library…</button>
+        </div>
+        <p class="field-hint">Ctrl+C copies the selected media, or the whole asset when no media is selected. Ctrl+V pastes into the selected asset. Text fields keep normal copy/paste. Clipboard references use saved media details; save changes first. To make a cropped duplicate, use the image menu’s Crop image action.</p>
+        <p class="field-hint">Shared snapshots are reusable across projects in this Lumibelle installation. Each project owns an independent copy; changes never silently update other episodes.</p>
+    </details>
+    @if (_busy) { <p role="status">Preparing or copying media… <button type="button" @onclick="CancelTransfer">Cancel transfer</button></p> }
+    @if (_notice is not null) { <p role="status">@_notice</p> }
+    @if (_error is not null) { <p class="field-error" role="alert">@_error</p> }
+    @if (_pending is not null) {
+        <div class="asset-reuse-actions"><button type="button" disabled="@_busy" @onclick="RetryAsync">Retry transfer</button><button type="button" disabled="@_busy" @onclick="DismissPending">Dismiss retry</button></div>
+    }
+    @if (_pendingPublish is not null) { <button type="button" disabled="@_busy" @onclick="RetryPublishAsync">Retry shared publication</button><button type="button" disabled="@_busy" @onclick="() => _pendingPublish = null">Dismiss retry</button> }
+</div>
+
+<InlineDialog Visible="_transferOpen" VisibleChanged="v => { if (!_busy) _transferOpen = v; }" Options="DialogOptions"
+              Title="@($"Copy or move {_capturedSource?.Kind.ToString().ToLowerInvariant()}")" CloseLabel="Close copy or move" CloseDisabled="_busy">
+    <DialogContent>
+        <fieldset disabled="@_busy" class="asset-reuse-fields">
+            <label>Action<select @bind="_mode"><option value="copy">Copy — keep the source</option><option value="move">Move — copy, then remove the source</option></select></label>
+            <label>Destination project<select value="@_targetProject" @onchange="TargetChangedAsync">@foreach (var project in _projects) { <option value="@project.Id">@project.Name</option> }</select></label>
+            @if (_capturedSource?.Kind != AssetReuseKind.Asset) {
+                <label>Destination asset<select @bind="_targetAsset"><option value="">Create a new asset</option>@foreach (var asset in CompatibleTargets) { <option value="@asset.Id">@asset.Name</option> }</select></label>
+            }
+            <label>Name<input maxlength="240" @bind="_name" /></label>
+            @if (_mode == "move") { <p role="status">The destination is saved first. Source media is then moved to its project’s Trash. Saved-shot references or active AI requests can prevent source removal; in that case the destination copy is kept.</p> }
+            <p>Copies include descriptions, guidance, images, saved reel keyframes and voice excerpts as applicable. Generation jobs and editable generation recipes are not duplicated.</p>
+        </fieldset>
+        @if (_error is not null) { <p class="field-error" role="alert">@_error</p> }
+    </DialogContent>
+    <DialogActions>@if (_busy) { <MudButton OnClick="CancelTransfer">Cancel transfer</MudButton> }@if (_pending is not null) { <MudButton Disabled="_busy" OnClick="RetryAsync">Retry transfer</MudButton> }<MudButton Disabled="_busy" OnClick="() => _transferOpen = false">Cancel</MudButton><MudButton Disabled="@(_busy || _pending is not null || _targetLoading || _targetProject == Guid.Empty || string.IsNullOrWhiteSpace(_name) || _mode == "move" && _capturedSource?.ProjectId == _targetProject)" OnClick="ConfirmTransferAsync" Variant="Variant.Filled" Color="Color.Primary">@(_mode == "move" ? "Move to project" : "Copy to project")</MudButton></DialogActions>
+</InlineDialog>
+<InlineDialog Visible="_publishOpen" VisibleChanged="v => { if (!_busy) _publishOpen = v; }" Options="DialogOptions"
+              Title="Publish shared snapshot" CloseLabel="Close publish shared snapshot" CloseDisabled="_busy">
+    <DialogContent><label>Snapshot name<input maxlength="240" @bind="_name" disabled="@_busy" /></label><p>This stores an independent, immutable media snapshot outside the source project. Publish another named snapshot for a later character version.</p>@if (_error is not null) { <p role="alert">@_error</p> }</DialogContent>
+    <DialogActions>@if (_busy) { <MudButton OnClick="CancelTransfer">Cancel transfer</MudButton> }@if (_pendingPublish is not null) { <MudButton Disabled="_busy" OnClick="RetryPublishAsync">Retry publication</MudButton> }<MudButton Disabled="_busy" OnClick="() => _publishOpen = false">Cancel</MudButton><MudButton Disabled="@(_busy || _pendingPublish is not null || string.IsNullOrWhiteSpace(_name))" OnClick="ConfirmPublishAsync" Variant="Variant.Filled" Color="Color.Primary">Publish snapshot</MudButton></DialogActions>
+</InlineDialog>
+<InlineDialog Visible="_sharedOpen" VisibleChanged="v => { if (!_busy) _sharedOpen = v; }" Options="DialogOptions"
+              Title="Shared asset library" CloseLabel="Close shared asset library" CloseDisabled="_busy">
+    <DialogContent>
+        <p>Use a snapshot to create a local copy. Images, reels and voices are pasted into the selected compatible asset; whole assets always create a new asset.</p>
+        <label>Search shared snapshots<input type="search" @bind="_sharedSearch" @bind:event="oninput" /></label>
+        @if (_shared.Count == 0) { <p>No shared snapshots yet. Select an asset or media item and choose Publish shared snapshot.</p> }
+        @foreach (var entry in _shared.Where(e => e.Name.Contains(_sharedSearch, StringComparison.OrdinalIgnoreCase))) {
+            <article class="shared-asset-entry" @key="entry.Id">
+                <strong>@entry.Name</strong><p>@entry.Category · @entry.Source.Kind · @entry.CreatedUtc.ToLocalTime().ToString("g")</p>
+                <p>@entry.Images images · @entry.Reels reels · @entry.Voices voices · @((entry.Bytes / (1024d * 1024)).ToString("0.##")) MB</p>
+                <button type="button" disabled="@(_busy || _pending is not null)" @onclick="() => UseSharedAsync(entry)">Use in this project</button>
+            </article>
+        }
+        @if (_error is not null) { <p role="alert">@_error</p> }
+    </DialogContent>
+    <DialogActions>@if (_busy) { <MudButton OnClick="CancelTransfer">Cancel transfer</MudButton> }<MudButton Disabled="_busy" OnClick="OpenSharedAsync">Refresh</MudButton><MudButton Disabled="_busy" OnClick="() => _sharedOpen = false">Close</MudButton></DialogActions>
+</InlineDialog>
+}

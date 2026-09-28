@@ -1,0 +1,28 @@
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+<div class="reel-audio-preview">
+    <audio @ref="_player" controls preload="none" src="@ReferenceVideos.Url(ProjectId, Reel.Media.Id)" aria-label="Reel audio playback"></audio>
+    <button @onclick="Play">Play audio excerpt</button>
+    @if (_error is not null) { <p role="alert">@_error</p> }
+</div>
+@code {
+    [Parameter] public Guid ProjectId { get; set; }
+    [Parameter, EditorRequired] public ShotVideoBinding Reel { get; set; } = null!;
+    private ElementReference _player;
+    private IJSObjectReference? _module;
+    private string? _error;
+    private async Task Play()
+    {
+        _error = null;
+        try {
+            _module ??= await JS.InvokeAsync<IJSObjectReference>("import", lumibelle.UiAssets.Module("voice-preview.js"));
+            var excerpt = ResolvedReferences.Excerpt(Reel);
+            await _module.InvokeVoidAsync("playExcerpt", _player, excerpt.Start, excerpt.Start + excerpt.Duration);
+        } catch (JSException) { _error = "Couldn’t play this excerpt. Check its start and duration."; }
+    }
+    public async ValueTask DisposeAsync()
+    {
+        if (_module is null) return;
+        try { await _module.InvokeVoidAsync("stop", _player); await _module.DisposeAsync(); } catch (JSDisconnectedException) { }
+    }
+}

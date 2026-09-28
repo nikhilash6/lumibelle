@@ -1,0 +1,138 @@
+@inherits ProjectAwareComponent
+@inject IProjectStore Projects
+@inject ICutStore Store
+@inject IShotStore Shots
+@inject IJSRuntime JS
+@implements IAsyncDisposable
+
+<PageTitle>Cut · Lumibelle</PageTitle>
+<NavigationLock ConfirmExternalNavigation="@(_dirty || _exporting)" OnBeforeInternalNavigation="BeforeNavigation" />
+<EditSessionRegistration Save="Save" />
+@if (_project is null) { <p role="status">@(_error ?? "Opening cut…")</p> }
+else
+{
+    <ProjectNavigation Project="_project" CurrentStudio="cut" />
+    <StudioPageHeader Title="Cut studio">
+        <div data-interactive="@(_interactive ? "true" : "false")" class="cut-actions cut-heading"><span role="status">@_saveStatus</span>
+            <MudButton Disabled="@(_saving || !_dirty)" OnClick="Save">Save</MudButton>
+            <MudButton Disabled="@(_exporting || _downloadingExport || _doc.Clips.Count == 0 || UnavailableTakes.Length > 0)" OnClick="Export">@(_exporting ? "Exporting…" : "Export MP4")</MudButton>
+            @if (_exporting) { <MudButton OnClick="CancelExport">Cancel export</MudButton> }
+            <MudButton Disabled="@(_undo.Count == 0)" OnClick="Undo">Undo</MudButton>
+            <MudButton Disabled="@(_redo.Count == 0)" OnClick="Redo">Redo</MudButton>
+        </div>
+    </StudioPageHeader>
+    @if (_error is not null && _loadFailure is null)
+    {
+        <div class="cut-error" role="alert">@_error
+            @if (_saveFailed)
+            {
+                <button type="button" disabled="@_saving" @onclick="Save">Retry save</button>
+                <button type="button" @onclick="DownloadDraft">Download unsaved copy</button>
+                <button type="button" disabled="@_saving" @onclick="() => _reloadOpen = true">Reload saved version…</button>
+            }
+        </div>
+    }
+    @if (_loadFailure is not null) { <LoadFailure Title="Couldn’t open the cut" Error="_loadFailure" Retry="RetryLoadAsync" /> }
+    else {
+    @if (_exportStatus is not null) { <p class="cut-export-status" role="status">@_exportStatus</p> }
+    @if (_exportError is not null) { <p class="cut-error" role="alert">@_exportError</p> }
+    @if (_completedExport is { } export && export.ProjectId == Id)
+    {
+        <MudButton Disabled="@(_exporting || _downloadingExport)" OnClick="DownloadExport">Download revision @export.Revision again</MudButton>
+    }
+    <div class="cut-workspace">
+        <div class="cut-workspace-toolbar">
+            <button type="button" class="cut-add" @ref="_addButton" @onclick="OpenChooser">Choose takes</button>
+            <button type="button" disabled="@_refreshing" @onclick="RefreshTakes">Refresh takes</button>
+            @if (_doc.Clips.Any(c => Issue(c) is not null)) { <span class="cut-source-issue">Some takes are unavailable. Restore them in <a href="/trash">Trash</a>, replace them, or remove their clips.</span> }
+        </div>
+        @if (Selected is { } selectedClip)
+        {
+            var takes = TakeChoices(selectedClip);
+            var takeIndex = Array.FindIndex(takes, t => t.Id == selectedClip.TakeId);
+            <div class="cut-take-switcher" aria-label="Selected clip take">
+                <strong title="@selectedClip.ShotTitle">@(_doc.Clips.IndexOf(selectedClip) + 1). @selectedClip.ShotTitle</strong>
+                <div class="cut-take-controls" title="Swap this clip in place. The new take uses its full frame range.">
+                    <button type="button" aria-label="Previous take" disabled="@(_swapping || takeIndex <= 0)" @onclick="() => CycleTake(-1)">‹</button>
+                    <label>Take<select value="@selectedClip.TakeId" disabled="@_swapping" @onchange="ReplaceTake">
+                        @if (takeIndex < 0) { <option value="@selectedClip.TakeId">@selectedClip.TakeLabel · unavailable</option> }
+                        @foreach (var choice in takes) { <option value="@choice.Id">@Label(choice)</option> }
+                    </select></label>
+                    <button type="button" aria-label="Next take" disabled="@(_swapping || takeIndex < 0 || takeIndex >= takes.Length - 1)" @onclick="() => CycleTake(1)">›</button>
+                    <span class="cut-take-count">@(takeIndex < 0 ? "—" : (takeIndex + 1).ToString()) / @takes.Length</span>
+                </div>
+            </div>
+        }
+        <CutPlayer @key="Id" @ref="_sequence" ProjectId="Id" Clips="_doc.Clips" SelectedId="_selected" Version="_version"
+                   ChooseTakes="OpenChooser" PreviewSelection="_previewSelection" Unavailable="@UnavailableTakes" SelectionChanged="Select" Trimmed="GestureTrim" Reordered="GestureOrder" />
+        @if (Selected is { } clip)
+        {
+            <section class="cut-inspector" aria-label="Selected clip">
+                @if (Issue(clip) is { } issue) { <p role="status" class="cut-source-issue">@issue <a href="/trash">Open Trash</a></p> }
+                <div class="cut-trims">
+                    <label>Start frame<input type="number" min="1" max="@clip.EndFrameExclusive" step="1" value="@(clip.StartFrame + 1)" @onchange="e => SetFrame(e, true)" /></label>
+                    <label>End frame<input type="number" min="@(clip.StartFrame + 1)" max="@clip.FrameCount" step="1" value="@clip.EndFrameExclusive" @onchange="e => SetFrame(e, false)" /></label>
+                    <button type="button" @onclick="ResetTrim">Reset trim</button>
+                    <button type="button" disabled="@(_doc.Clips.IndexOf(clip) == 0)" @onclick="() => Move(clip.Id, -1)">Move earlier</button>
+                    <button type="button" disabled="@(_doc.Clips.IndexOf(clip) == _doc.Clips.Count - 1)" @onclick="() => Move(clip.Id, 1)">Move later</button>
+                    <button type="button" @onclick="() => Remove(clip.Id)">Remove clip</button>
+                </div>
+                <div class="cut-trim-summary">Keeping frames @(clip.StartFrame + 1)–@clip.EndFrameExclusive · @Time(clip.Duration)</div>
+                @if (_trimError is not null) { <p role="alert" class="cut-source-issue">@_trimError</p> }
+            </section>
+        }
+        else { <p class="cut-empty">Add saved takes, then drag their edges to trim and their grips to rearrange.</p> }
+    </div>
+    }
+}
+
+<InlineDialog Visible="_chooserOpen" VisibleChanged="ChooserVisibility" Options="ChooserOptions" Class="cut-chooser" Title="Choose shots and takes" CloseLabel="Close choose shots and takes">
+    <DialogContent>
+        <p>Swap existing clips in place, or add missing shots in shot order. Swapping resets the clip's trim to the full take.</p>
+        @if (_shots.Shots.Count > 0)
+        {
+            var matchingShots = CutTakeSelection.LatestByShot(_shots, _latestResolution, _latestLanguage).Count;
+            <div class="cut-latest-controls" role="group" aria-label="Bulk take selection">
+                <label>Language<select @bind="_latestLanguage" disabled="@_adding"><option value="">Master</option>@foreach (var language in TakeLanguages.Choices(_shots.Takes)) { <option value="@language.Code">@language.Name</option> }</select></label>
+                @if (_latestLanguage.Length > 0) { <p class="field-hint">Silent master shots can be reused. Missing dubbed dialogue is not replaced with master speech. Unselected existing clips remain unchanged: review the entire cut before exporting.</p> }
+                <label>Latest take resolution
+                    <select @bind="_latestResolution" disabled="@_adding" aria-describedby="cut-latest-help">
+                        <option value="">Any resolution</option>
+                        @foreach (var resolution in CutTakeSelection.ResolutionChoices(_shots))
+                        {
+                            <option value="@resolution">@resolution MP</option>
+                        }
+                    </select>
+                </label>
+                <button type="button" disabled="@_adding" @onclick="ChooseLatest">Select latest for all shots</button>
+            </div>
+            <p class="cut-latest-summary" role="status">@matchingShots of @_shots.Shots.Count shots have a matching saved take.</p>
+            <p class="cut-choice-hint" id="cut-latest-help">Uses output size rounded to 0.1 MP. Select latest replaces the choices below; shots without a match stay unchanged. Review before applying.</p>
+        }
+        @foreach (var shot in _shots.Shots)
+        {
+            var choices = _shots.Takes.Where(t => t.ShotId == shot.Id).OrderBy(t => t.CreatedUtc).ToArray();
+            var existing = _doc.Clips.Where(c => c.ShotId == shot.Id).ToArray();
+            <div class="cut-choice" @key="shot.Id"><label>@shot.Title<select aria-label="Take for @shot.Title" value="@ChoiceValue(shot.Id)" @onchange="e => Choose(shot.Id, e)" disabled="@(choices.Length == 0 || _adding)">
+                <option value="">@(choices.Length == 0 ? "No saved takes" : "No change")</option>
+                @if (_choices.TryGetValue(shot.Id, out var chosen) && choices.All(t => t.Id != chosen)) { <option value="@chosen">Current take · unavailable</option> }
+                @foreach (var take in choices) { <option value="@take.Id">@Label(take) · @TakeDisplay.Badge(take)@(take.Id == shot.SelectedTakeId ? " · production selection" : "")</option> }
+            </select></label>
+                @if (existing.Length > 0)
+                {
+                    <label class="cut-choice-target">In the cut<select aria-label="Action for @shot.Title" value="@_choiceTargets.GetValueOrDefault(shot.Id)" disabled="@_adding" @onchange="e => ChooseTarget(shot.Id, e)">
+                        @foreach (var entry in existing) { <option value="@entry.Id">Replace clip @(_doc.Clips.IndexOf(entry) + 1)</option> }
+                        <option value="@Guid.Empty">Add another clip</option>
+                    </select></label>
+                }
+                else { <span class="cut-choice-hint">New clip · inserted in shot order</span> }
+            </div>
+        }
+        @if (_shots.Shots.Count == 0) { <p>No shots yet. Generate takes in Shots first.</p> }
+        @if (_chooserError is not null) { <p role="alert">@_chooserError</p> }
+    </DialogContent>
+    <DialogActions><MudButton Disabled="@_adding" OnClick="() => ChooserVisibility(false)">Cancel</MudButton><MudButton Disabled="@(ChoiceChanges == 0 || _adding)" OnClick="AddChosen" Color="Color.Primary" Variant="Variant.Filled">Apply changes (@ChoiceChanges)</MudButton></DialogActions>
+</InlineDialog>
+<InlineDialog @bind-Visible="_reloadOpen" Options="ChooserOptions" Title="Reload saved cut?" CloseLabel="Close reload saved cut"><DialogContent>Your unsaved edits will be replaced. Download an unsaved copy first if you want to keep them.</DialogContent>
+    <DialogActions><MudButton OnClick="() => _reloadOpen = false">Cancel</MudButton><MudButton OnClick="Reload">Reload saved cut</MudButton></DialogActions>
+</InlineDialog>

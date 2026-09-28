@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk.Razor">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <OutputType>Exe</OutputType>
+    <IsTestProject>true</IsTestProject>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="xunit.v3.mtp-off" />
+    <PackageReference Include="xunit.runner.visualstudio" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="bunit" />
+    <ProjectReference Include="../../src/Lumibelle.Web/Lumibelle.Web.csproj" />
+    <Using Include="Xunit" />
+  </ItemGroup>
+<ItemGroup><Compile Include="../Shared/*.cs" /></ItemGroup>
+<ItemGroup><None Update="Fixtures/h3-contract.json" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>
+<ItemGroup><None Update="Fixtures/h3-shift-contract.json" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>
+<ItemGroup><None Update="Fixtures/h3-upscale-plus-contract.json" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>
+<ItemGroup><None Update="Fixtures/comfy-lossless-*.webp" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>
+<ItemGroup><None Update="Fixtures/h3-presets-contract.json" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>
+<ItemGroup><None Update="Fixtures/h3-presets-recipes.json" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>
+<ItemGroup><None Include="../../docs/h3/character-reference-prompt.txt" Link="Fixtures/character-reference-prompt.txt" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>
+<ItemGroup><None Update="Fixtures/QwenImage21/*.json" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>
+</Project>

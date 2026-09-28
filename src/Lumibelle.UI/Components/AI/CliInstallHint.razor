@@ -1,0 +1,28 @@
+@inject IJSRuntime JS
+@* Lumibelle runs on the user's own computer, so the server OS is the one they install on. *@
+<details class="cli-install">
+    <summary>Install the @Name CLI</summary>
+    <p class="field-hint">Run this in @(OperatingSystem.IsWindows() ? "PowerShell" : "a terminal"):</p>
+    <div class="cli-install-command">
+        <pre><code>@Command</code></pre>
+        <button type="button" @onclick="CopyAsync" aria-label="@($"Copy {Name} install command")">@(_copied ? "Copied" : "Copy")</button>
+    </div>
+    @if (_copyFailed) { <p class="field-hint" role="status">Copying is unavailable here. Select the command and copy it instead.</p> }
+    @if (Alternatives is not null) { <p class="field-hint">@Alternatives</p> }
+    <p class="field-hint">@SignIn <a href="@Guide" target="_blank" rel="noopener noreferrer">Installation guide ↗</a></p>
+</details>
+@code {
+    [Parameter, EditorRequired] public string Name { get; set; } = "";
+    [Parameter, EditorRequired] public string WindowsCommand { get; set; } = "";
+    [Parameter, EditorRequired] public string UnixCommand { get; set; } = "";
+    [Parameter] public RenderFragment? Alternatives { get; set; }
+    [Parameter, EditorRequired] public RenderFragment SignIn { get; set; } = null!;
+    [Parameter, EditorRequired] public string Guide { get; set; } = "";
+    private bool _copied, _copyFailed;
+    private string Command => OperatingSystem.IsWindows() ? WindowsCommand : UnixCommand;
+    private async Task CopyAsync()
+    {
+        try { await JS.InvokeVoidAsync("navigator.clipboard.writeText", Command); _copied = true; _copyFailed = false; }
+        catch (JSException) { _copied = false; _copyFailed = true; }
+    }
+}

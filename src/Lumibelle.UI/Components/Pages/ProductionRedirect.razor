@@ -1,0 +1,5 @@
+@inject NavigationManager Navigation
+@code {
+    [Parameter] public Guid Id { get; set; }
+    protected override void OnAfterRender(bool firstRender) { if (firstRender) Navigation.NavigateTo(Navigation.Uri.Replace("/production", "/shots"), replace: true); }
+}

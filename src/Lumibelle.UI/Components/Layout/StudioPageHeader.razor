@@ -1,0 +1,8 @@
+<h1 class="studio-page-title">@Title</h1>
+<SectionContent SectionName="studio-actions" ChildContent="_actions" />
+@code {
+    [Parameter, EditorRequired] public string Title { get; set; } = "";
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+    private RenderFragment? _actions;
+    protected override void OnInitialized() => _actions = @<div class="studio-page-actions">@ChildContent</div>;
+}

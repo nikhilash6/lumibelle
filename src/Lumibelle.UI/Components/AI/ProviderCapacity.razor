@@ -1,0 +1,82 @@
+@using System.Globalization
+@inject IServiceProvider Services
+@implements IAsyncDisposable
+<div class="provider-capacity" @ref="_element">
+    @if (Backend == AiBackend.ComfyUI)
+    {
+        <div class="field-label-help"><strong>Available memory</strong><HelpHint Label="Available GPU memory" Text="Reported by ComfyUI, including reusable cached memory where supported. This is current capacity, not a prediction that the next request will fit. GPUs are shown separately." /></div>
+        @foreach (var device in _reading.Devices ?? [])
+        {
+            var memory = device.Type is "cpu" or "mps" ? "System / shared memory" : "VRAM";
+            <div class="capacity-device"><strong>@device.Name</strong>
+                @if (device.TotalBytes is { } total && device.AvailableBytes is { } available)
+                {
+                    <span>@memory available: @GiB(available) / @GiB(total) GiB</span>
+                    <meter min="0" max="@total" value="@available" aria-label="@(device.Name + " available memory")"></meter>
+                }
+                else { <span>@memory unavailable</span> }
+            </div>
+        }
+        @if (_reading.Devices is not { Count: > 0 }) { <p>No device memory reported.</p> }
+    }
+    else
+    {
+        <strong>OpenRouter key allowance</strong>
+        @if (_reading.Key is { } key)
+        {
+            <p>@(key.LimitKnown && key.Limit is null ? "No key spending cap" : "Key allowance remaining: " + Money(key.Remaining))</p>
+            @if (key.Limit is { } limit) { <p>Spending cap: @Money(limit)@(!string.IsNullOrWhiteSpace(key.Reset) ? " · resets " + key.Reset : "")</p> }
+            <dl class="capacity-usage"><dt>Key usage · all time</dt><dd>@Money(key.Usage)</dd><dt>Today · UTC</dt><dd>@Money(key.DailyUsage)</dd><dt>This week · UTC</dt><dd>@Money(key.WeeklyUsage)</dd><dt>This month · UTC</dt><dd>@Money(key.MonthlyUsage)</dd></dl>
+        }
+        <p class="field-hint">This key’s spending allowance is separate from your account balance. <a href="https://openrouter.ai/settings/credits" target="_blank" rel="noopener noreferrer">Account credits ↗</a></p>
+    }
+    @if (_reading.CheckedUtc is { } date) { <p class="field-hint">@(_reading.Error is null ? "Checked" : "Last reading · stale") @date.ToLocalTime().ToString("g")</p> }
+    @if (_reading.Error is { } error) { <p class="field-error" role="status">@error</p> }
+    <button type="button" disabled="@_busy" @onclick="() => RefreshAsync(true)">@(_busy ? "Refreshing…" : "Refresh")</button>
+</div>
+@code {
+    [Parameter] public AiBackend Backend { get; set; }
+    private lumibelle.Models.AiProviderCapacity _reading = new();
+    private ElementReference _element;
+    private IJSObjectReference? _module;
+    private readonly CancellationTokenSource _life = new();
+    private bool _busy;
+    private static string GiB(long value) => (value / 1073741824d).ToString("0.0", CultureInfo.CurrentCulture);
+    private static string Money(decimal? value) => value is { } amount ? "$" + amount.ToString("0.############################", CultureInfo.InvariantCulture) + " USD" : "Not reported";
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        await RefreshAsync(false);
+        _ = PollAsync();
+    }
+    private async Task PollAsync()
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(Backend == AiBackend.ComfyUI ? 5 : 60), Services.GetService<TimeProvider>() ?? TimeProvider.System);
+            while (await timer.WaitForNextTickAsync(_life.Token)) await InvokeAsync(() => RefreshAsync(false));
+        }
+        catch (OperationCanceledException) { }
+    }
+    private async Task RefreshAsync(bool force)
+    {
+        if (_busy || _life.IsCancellationRequested) return;
+        _busy = true;
+        try
+        {
+            _module ??= await Services.GetRequiredService<IJSRuntime>().InvokeAsync<IJSObjectReference>("import", lumibelle.UiAssets.Module("ai-jobs.js"));
+            if (!await _module.InvokeAsync<bool>("isReviewVisible", _element)) return;
+            StateHasChanged();
+            _reading = Services.GetService<AiProviderCapacityService>() is { } capacity ? await capacity.ReadAsync(Backend, force, _life.Token) : new(Error: "Capacity information is unavailable.");
+        }
+        catch (OperationCanceledException) { }
+        catch (JSException) { }
+        finally { _busy = false; if (!_life.IsCancellationRequested) StateHasChanged(); }
+    }
+    public async ValueTask DisposeAsync()
+    {
+        _life.Cancel();
+        if (_module is not null) try { await _module.DisposeAsync(); } catch (JSDisconnectedException) { }
+        _life.Dispose();
+    }
+}

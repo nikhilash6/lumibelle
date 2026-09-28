@@ -1,0 +1,231 @@
+@using System.Globalization
+@using lumibelle.Models
+@using lumibelle.Services.AI
+@using lumibelle.Services.Story
+
+<section class="settings-card text-profiles" aria-label="LLM profiles">
+    <button id="text-profiles-toggle" type="button" class="profiles-toggle" aria-expanded="@(_open ? "true" : "false")" aria-controls="text-profiles-content" @onclick="() => _open = !_open">
+        LLM profiles (@SettingsSnapshot.TextModelProfiles.Count)
+    </button>
+    <p class="field-hint">Save several named configurations of the same model, such as Fast, Careful, or Creative.</p>
+    @if (_open)
+    {
+        <div id="text-profiles-content">
+            <p class="field-hint">Profiles appear in all text-model pickers without starring. Selecting one copies its settings; editing or deleting the profile does not change saved defaults or queued requests.</p>
+            @if (_error is not null) { <p class="field-error" role="alert">@_error</p> }
+            <button type="button" id="new-text-profile" disabled="@(Disabled || _editing || _deleteTarget is not null || BaseChoices.Length == 0)" @onclick="NewProfile">New profile</button>
+            @if (BaseChoices.Length == 0) { <p class="field-hint">Refresh a provider below to load its models.</p> }
+            <ul class="profile-list">
+                @foreach (var profile in SettingsSnapshot.TextModelProfiles.OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase))
+                {
+                    <li @key="profile.ProfileId" data-profile-id="@profile.ProfileId">
+                        <div><strong>@profile.Name</strong><span>@profile.Backend · @profile.Model</span><small>@TextModelProfiles.Describe(profile)</small></div>
+                        <div class="profile-actions">
+                            <button type="button" data-action="edit" aria-label="@($"Edit profile {profile.Name}")" disabled="@(Disabled || _editing || _deleteTarget is not null)" @onclick="() => Edit(profile)">Edit</button>
+                            <button type="button" data-action="duplicate" aria-label="@($"Duplicate profile {profile.Name}")" disabled="@(Disabled || _editing || _deleteTarget is not null)" @onclick="() => Duplicate(profile)">Duplicate</button>
+                            <button type="button" data-action="remove" aria-label="@($"Remove profile {profile.Name}")" disabled="@(Disabled || _editing || _deleteTarget is not null)" @onclick="() => ConfirmRemove(profile)">Remove</button>
+                        </div>
+                    </li>
+                }
+            </ul>
+            @if (_deleteTarget is { } removing)
+            {
+                <div role="group" aria-label="Confirm profile removal">
+                    <p>Remove <strong>@removing.Name</strong> from the profile library? Existing selections and requests keep their saved copy.</p>
+                    <button type="button" id="confirm-remove-profile" disabled="@Disabled" @onclick="RemoveAsync">Remove profile</button>
+                    <button type="button" disabled="@Disabled" @onclick="CancelRemove">Keep profile</button>
+                </div>
+            }
+            @if (_editing)
+            {
+                <form id="text-profile-form" @onsubmit="SaveAsync" @onsubmit:preventDefault>
+                    <fieldset disabled="@Disabled">
+                        <legend>@(_original is null ? "New LLM profile" : "Edit LLM profile")</legend>
+                        <div class="profile-fields">
+                            <label for="profile-name">Profile name<input id="profile-name" type="text" maxlength="120" required @bind="_name" /></label>
+                            <label for="profile-model">Model
+                                <select id="profile-model" value="@(_model is null ? "" : TextModelPolicy.Key(_model))" @onchange="ChangeModel">
+                                    @foreach (var model in BaseChoices) { <option value="@TextModelPolicy.Key(model)">@BaseLabel(model)</option> }
+                                </select>
+                            </label>
+                        </div>
+                        @if (_model is not null && TextModelPolicy.UsesNamedEffort(_model.Backend))
+                        {
+                            <label for="profile-effort">Reasoning effort
+                                <select id="profile-effort" @bind="_effort">
+                                    <option value="">Model default</option>
+                                    @foreach (var effort in Efforts) { <option value="@effort">@effort</option> }
+                                    @if (_effort.Length > 0 && !Efforts.Contains(_effort)) { <option value="@_effort">@_effort · refresh provider to verify</option> }
+                                </select>
+                            </label>
+                            <p class="field-hint">@TextModelPolicy.ProviderName(_model.Backend) profiles use their own effort, or the model's default. They do not inherit the global @TextModelPolicy.ProviderName(_model.Backend) effort. Temperature, token budgets and output limits are not exposed by this integration.</p>
+                        }
+                        else if (_model is not null)
+                        {
+                            <div class="profile-fields">
+                                <label for="profile-temperature">Temperature<input id="profile-temperature" type="number" min="@(_model.Backend == AiBackend.ComfyUI ? "0.01" : "0")" max="2" step="0.01" @bind="_temperature" placeholder="Default" /></label>
+                                <label for="profile-output">Maximum output tokens<input id="profile-output" type="number" min="1" max="@(_model.Backend == AiBackend.ComfyUI ? "32768" : "1000000")" step="1" @bind="_output" placeholder="Default" /></label>
+                            </div>
+                            @if (_model.Backend == AiBackend.OpenRouter)
+                            {
+                                <label for="profile-reasoning">Reasoning control
+                                    <select id="profile-reasoning" value="@_reasoningMode" @onchange="ChangeReasoning">
+                                        <option value="default">Provider default</option><option value="effort">Effort level / off</option><option value="budget">Thinking token budget</option>
+                                    </select>
+                                </label>
+                                @if (_reasoningMode == "effort")
+                                {
+                                    <label for="profile-effort">Reasoning effort
+                                        <select id="profile-effort" @bind="_effort">
+                                            <option value="">Choose an effort</option>
+                                            @foreach (var effort in Efforts) { <option value="@effort">@(effort == "none" ? "none · reasoning off" : effort)</option> }
+                                            @if (_effort.Length > 0 && !Efforts.Contains(_effort)) { <option value="@_effort">@_effort · not advertised</option> }
+                                        </select>
+                                    </label>
+                                }
+                                @if (_reasoningMode == "budget")
+                                {
+                                    <label for="profile-budget">Thinking tokens<input id="profile-budget" type="number" min="1" max="1000000" step="1" required @bind="_budget" /></label>
+                                }
+                                <p class="field-hint">Blank controls are omitted, preserving provider defaults. Effort and token budget cannot be combined. Support and budget interpretation depend on the model/provider; any explicit output limit must leave room for the answer after thinking tokens.</p>
+                            }
+                            else
+                            {
+                                <p class="field-hint">Blank controls use this ComfyUI model's saved settings, then the ComfyUI defaults. An explicit temperature also overrides asset extraction's 0.2. This workflow keeps thinking disabled.</p>
+                            }
+                        }
+                        <div class="profile-actions"><button type="submit">Save profile</button><button type="button" @onclick="CancelEdit">Cancel profile edit</button></div>
+                    </fieldset>
+                </form>
+            }
+        </div>
+    }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public AiSettings SettingsSnapshot { get; set; } = new();
+    [Parameter] public IEnumerable<TextModelReference> Models { get; set; } = [];
+    [Parameter] public Func<TextModelReference, AiModel?>? CatalogModel { get; set; }
+    [Parameter] public bool Busy { get; set; }
+    [Parameter, EditorRequired] public Func<IReadOnlyList<TextModelReference>, Task<bool>> SaveProfiles { get; set; } = null!;
+    private bool _open, _editing, _saving;
+    private bool Disabled => Busy || _saving;
+    private Guid _id;
+    private TextModelReference? _model, _original, _deleteTarget;
+    private string _name = "", _temperature = "", _output = "", _effort = "", _budget = "", _reasoningMode = "default";
+    private string? _error;
+    private TextModelReference[] BaseChoices => Models.Concat(SettingsSnapshot.TextModelProfiles)
+        .Concat(_model is { } current ? new[] { current } : Array.Empty<TextModelReference>())
+        .Where(m => !string.IsNullOrWhiteSpace(m.Model)).Select(BaseModel).DistinctBy(TextModelPolicy.Key)
+        .OrderBy(BaseLabel, StringComparer.OrdinalIgnoreCase).ToArray();
+    private static TextModelReference BaseModel(TextModelReference model) =>
+        TextModelProfiles.ModelOnly(model);
+    private string BaseLabel(TextModelReference model) => $"{TextModelPolicy.ProviderName(model.Backend)} · {TextModelPolicy.DisplayName(model, SettingsSnapshot, CatalogModel?.Invoke(model)?.Name)} · {model.Model}{(model.Backend == AiBackend.ComfyUI ? $" · {model.ComfyUrl}" : "")}";
+    private IReadOnlyList<string> Efforts => _model is null ? Array.Empty<string>() : _model.Backend switch
+    {
+        AiBackend.Codex => CatalogModel?.Invoke(_model)?.ReasoningEfforts ?? Array.Empty<string>(),
+        AiBackend.ClaudeCode => ClaudeCodeClient.Models.FirstOrDefault(m => m.Id == _model.Model)?.ReasoningEfforts ?? Array.Empty<string>(),
+        _ => TextModelProfiles.OpenRouterEffortChoices(CatalogModel?.Invoke(_model))
+    };
+
+    private void NewProfile()
+    {
+        if (Disabled || _editing || _deleteTarget is not null || BaseChoices.FirstOrDefault() is not { } model) return;
+        Begin(model with { ProfileId = Guid.NewGuid(), Name = "" }, null);
+    }
+    private void Edit(TextModelReference profile) { if (!Disabled && !_editing && _deleteTarget is null) Begin(profile, profile); }
+    private void Duplicate(TextModelReference profile)
+    {
+        if (Disabled || _editing || _deleteTarget is not null) return;
+        var stem = profile.Name.Length > 100 ? profile.Name[..100] : profile.Name;
+        var name = stem + " copy"; var index = 2;
+        while (SettingsSnapshot.TextModelProfiles.Any(p => TextModelPolicy.Same(p, profile) && p.Name.Equals(name, StringComparison.OrdinalIgnoreCase))) name = stem + " copy " + index++;
+        Begin(profile with { ProfileId = Guid.NewGuid(), Name = name }, null);
+    }
+    private void Begin(TextModelReference profile, TextModelReference? original)
+    {
+        _original = original; _id = profile.ProfileId!.Value; _model = BaseModel(profile); _name = profile.Name;
+        _temperature = profile.Temperature?.ToString("R", CultureInfo.InvariantCulture) ?? "";
+        _output = profile.MaxOutputTokens?.ToString(CultureInfo.InvariantCulture) ?? "";
+        _effort = profile.ReasoningEffort ?? ""; _budget = profile.ReasoningMaxTokens?.ToString(CultureInfo.InvariantCulture) ?? "";
+        _reasoningMode = profile.ReasoningMaxTokens is not null ? "budget" : profile.ReasoningEffort is not null ? "effort" : "default";
+        _editing = true; _error = null;
+    }
+    private void ChangeModel(ChangeEventArgs args)
+    {
+        if (Disabled) return;
+        var selected = BaseChoices.FirstOrDefault(m => TextModelPolicy.Key(m) == args.Value?.ToString());
+        if (selected is null || TextModelPolicy.Same(selected, _model)) return;
+        _model = selected; _temperature = _output = _effort = _budget = ""; _reasoningMode = "default"; _error = null;
+    }
+    private void ChangeReasoning(ChangeEventArgs args)
+    {
+        if (Disabled || args.Value?.ToString() is not ("default" or "effort" or "budget")) return;
+        _reasoningMode = args.Value!.ToString()!; _effort = _budget = ""; _error = null;
+    }
+    private void CancelEdit() { if (Disabled) return; _editing = false; _model = _original = null; _error = null; }
+    private void ConfirmRemove(TextModelReference profile) { if (!Disabled && !_editing) { _deleteTarget = profile; _error = null; } }
+    private void CancelRemove() { if (!Disabled) { _deleteTarget = null; _error = null; } }
+    private static float? ReadTemperature(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return null;
+        if (float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var value) && float.IsFinite(value)) return value;
+        throw new WorkspaceStoreException("Enter a finite temperature, or leave it blank for defaults.");
+    }
+    private static int? ReadTokens(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return null;
+        if (int.TryParse(text.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var value)) return value;
+        throw new WorkspaceStoreException("Token limits must be whole numbers, or blank for defaults.");
+    }
+    private async Task SaveAsync()
+    {
+        if (Disabled || !_editing || _model is null) return;
+        _error = null;
+        try
+        {
+            if (SettingsSnapshot.TextModelProfiles.SingleOrDefault(p => p.ProfileId == _id) != _original)
+                throw new WorkspaceStoreException("This profile changed while you were editing it. Cancel and reopen the saved profile before retrying.");
+            if (_model.Backend == AiBackend.OpenRouter && _reasoningMode == "effort" && _effort.Length == 0)
+                throw new WorkspaceStoreException("Choose an effort, or select Provider default.");
+            if (_model.Backend == AiBackend.OpenRouter && _reasoningMode == "budget" && string.IsNullOrWhiteSpace(_budget))
+                throw new WorkspaceStoreException("Enter a thinking token budget, or select Provider default.");
+            var effort = TextModelPolicy.UsesNamedEffort(_model.Backend) || _reasoningMode == "effort" ? _effort : "";
+            var profile = TextModelPolicy.Normalize(_model with
+            {
+                ProfileId = _id, Name = _name, ReasoningEffort = effort.Length == 0 ? null : effort,
+                Temperature = ReadTemperature(_temperature), MaxOutputTokens = ReadTokens(_output),
+                ReasoningMaxTokens = _reasoningMode == "budget" ? ReadTokens(_budget) : null
+            });
+            TextModelPolicy.Validate(profile);
+            var catalog = CatalogModel?.Invoke(profile);
+            if (TextModelProfiles.CatalogIssue(profile, catalog) is { } issue) throw new WorkspaceStoreException(issue);
+            if (profile.Backend == AiBackend.Codex && profile.ReasoningEffort is { } codexEffort && catalog?.ReasoningEfforts?.Contains(codexEffort) != true)
+                throw new WorkspaceStoreException("Refresh Codex and choose an effort reported by this model.");
+            if (profile.Backend == AiBackend.ClaudeCode && profile.ReasoningEffort is { } claudeEffort && !Efforts.Contains(claudeEffort))
+                throw new WorkspaceStoreException("Choose a reasoning effort this Claude Code model supports, or Model default.");
+            var profiles = SettingsSnapshot.TextModelProfiles.Where(p => p.ProfileId != _id).Append(profile).ToList();
+            TextModelProfiles.ValidateSettings(SettingsSnapshot with { TextModelProfiles = profiles });
+            _saving = true;
+            if (await SaveProfiles(profiles)) { _editing = false; _model = _original = null; }
+            else _error = "The profile was not saved. Your draft is still here; review the settings error and retry.";
+        }
+        catch (WorkspaceStoreException e) { _error = e.Message; }
+        finally { _saving = false; }
+    }
+    private async Task RemoveAsync()
+    {
+        if (Disabled || _deleteTarget is not { } target) return;
+        _error = null;
+        if (SettingsSnapshot.TextModelProfiles.SingleOrDefault(p => p.ProfileId == target.ProfileId) != target)
+        { _error = "This profile changed. Cancel removal and review its saved settings."; return; }
+        _saving = true;
+        try
+        {
+            if (await SaveProfiles(SettingsSnapshot.TextModelProfiles.Where(p => p.ProfileId != target.ProfileId).ToArray())) _deleteTarget = null;
+            else _error = "The profile was not removed. Review the settings error and retry.";
+        }
+        catch (WorkspaceStoreException e) { _error = e.Message; }
+        finally { _saving = false; }
+    }
+}

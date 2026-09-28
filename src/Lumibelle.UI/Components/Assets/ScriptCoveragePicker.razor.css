@@ -1,0 +1,11 @@
+.coverage-controls { display: flex; align-items: end; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+.coverage-controls label { display: grid; gap: 4px; }
+.coverage-controls button, select { border: 1px solid var(--line, var(--lumi-control-border)); background: transparent; border-radius: var(--lumi-radius-control); padding: 7px 10px; font: inherit; }
+/* Dialog content is a scrolling flex column; without flex-shrink: 0 a short viewport collapses the list. */
+.coverage-scenes { max-height: 38dvh; overflow: auto; scrollbar-gutter: stable; flex-shrink: 0; }
+.coverage-act h3 { position: sticky; top: 0; z-index: 1; margin: 0; background: var(--surface, var(--lumi-surface)); padding: 10px 0; font-size: var(--lumi-font-size-ui); }
+.coverage-scene { display: flex; align-items: start; gap: 10px; padding: 10px 8px; border-block-end: 1px solid var(--line, var(--lumi-border)); cursor: pointer; }
+.coverage-scene input { margin-block-start: 4px; flex: 0 0 auto; }
+.coverage-scene span { display: grid; gap: 3px; min-width: 0; overflow-wrap: anywhere; }
+.coverage-scene strong { font-size: var(--lumi-font-size-ui); font-weight: 500; }
+.coverage-scene small { font-size: var(--lumi-font-size-meta); color: var(--muted, var(--lumi-text-muted)); }

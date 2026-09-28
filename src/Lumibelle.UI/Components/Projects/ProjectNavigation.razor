@@ -1,0 +1,48 @@
+@inject NavigationManager ProjectNavigationManager
+@inject IJSRuntime ProjectJS
+@inherits ProjectAwareComponent
+<SectionContent SectionName="project-identity">
+    <nav class="project-breadcrumb" aria-label="Breadcrumb">
+        <a href="/">Projects</a>
+        <span aria-hidden="true">/</span>
+        <a href="@ProjectUrl" title="@Project.Name">@Project.Name</a>
+    </nav>
+</SectionContent>
+<SectionContent SectionName="project-navigation">
+    <nav class="project-tabs" aria-label="Project navigation">
+        <a href="@ProjectUrl" class="@ActiveClass("overview")" aria-current="@CurrentPage("overview")">Overview</a>
+        <a href="@($"{ProjectUrl}/script")" class="@ActiveClass("script")" aria-current="@CurrentPage("script")">Script</a>
+        <a href="@($"{ProjectUrl}/assets")" class="@ActiveClass("assets")" aria-current="@CurrentPage("assets")">Assets</a>
+        <a href="@($"{ProjectUrl}/shots")" class="@ActiveClass("shots")" aria-current="@CurrentPage("shots")">Shots</a>
+        <a href="@($"{ProjectUrl}/cut")" class="@ActiveClass("cut")" aria-current="@CurrentPage("cut")">Cut</a>
+        <a href="@($"{ProjectUrl}/settings")" class="@ActiveClass("settings")" aria-current="@CurrentPage("settings")">Settings</a>
+    </nav>
+</SectionContent>
+
+@code {
+    [Parameter, EditorRequired] public ProjectInfo Project { get; set; } = default!;
+    [Parameter] public string CurrentStudio { get; set; } = "overview";
+    private (Guid, string)? _routeVersion;
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        try {
+            await using var module = await ProjectJS.InvokeAsync<IJSObjectReference>("import", UiAssets.Module("workspace-position.js"));
+            if (module is not null) await module.InvokeVoidAsync("focusHeading", ProjectLink(Project.Id, CurrentStudio == "overview" ? "" : "/" + CurrentStudio));
+        } catch (Exception e) when (e is JSException or JSDisconnectedException) { }
+    }
+    protected override async Task OnParametersSetAsync()
+    {
+        var version = (Project.Id, Project.Name);
+        if (_routeVersion == version || ProjectRoutes is null) return;
+        _routeVersion = version;
+        await ProjectRoutes.RefreshAsync();
+        var uri = ProjectNavigationManager.ToAbsoluteUri(ProjectNavigationManager.Uri);
+        var current = uri.PathAndQuery + uri.Fragment;
+        var canonical = ProjectRoutes.Canonicalize(current);
+        if (canonical != current) ProjectNavigationManager.NavigateTo(canonical, replace: true);
+    }
+    private string ProjectUrl => ProjectLink(Project.Id, "");
+    private string? ActiveClass(string studio) => CurrentStudio == studio ? "active" : null;
+    private string? CurrentPage(string studio) => CurrentStudio == studio ? "page" : null;
+}

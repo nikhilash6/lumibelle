@@ -1,0 +1,72 @@
+@using lumibelle.Models
+@using lumibelle.Services.Assets
+
+@if (ReferenceReels.IsCharacterCapture(Draft))
+{
+    @if (ReferenceReels.HasCharacterCaptureOptions(Draft))
+    {
+        <div class="reel-capture-options" aria-label="Character capture options">
+            <label>Movement<select aria-label="Capture movement" value="@ReferenceReels.SelectedArticulation(Draft)" @onchange="ChangeArticulation" disabled="@(Disabled || Draft.Duration < 9)">
+                <option value="@ReelArticulation.None">None</option>
+                <option value="@ReelArticulation.Arms">Arms · raise and lower</option>
+                <option value="@ReelArticulation.Knee">Knee · lift and replace one foot</option>
+            </select></label>
+            <label>Face close-up<select aria-label="Capture close-up transition" value="@ReferenceReels.SelectedCloseUp(Draft)" @onchange="ChangeCloseUp" disabled="@(Disabled || Draft.Duration < 8)">
+                <option value="@ReelCloseUpTransition.Cut">Cut</option>
+                <option value="@ReelCloseUpTransition.PushIn">Push-in · continuous shot</option>
+            </select></label>
+        </div>
+        <p class="capture-hint">@ReferenceReels.CharacterCaptureSummary(Draft)</p>
+        @if (Draft.Duration < 8)
+        {
+            <p class="capture-hint" role="status">Below 8 requested seconds, use five held views with clean cuts. Movement and push-in are omitted; their settings are remembered.</p>
+        }
+        else if (Draft.Duration < 9)
+        {
+            <p class="capture-hint" role="status">Movement is omitted below 9 requested seconds to leave time for the orbit and face close-up.</p>
+        }
+        <p class="capture-hint">This preset starts at 10 requested seconds in Silent mode. Adjust Requested seconds or Voice mode in the reel settings, then compose or revise the pair. Existing prompt texts are not overwritten.</p>
+    }
+    else if (ReferenceReels.CapturePreset(Draft) is { } preset)
+    {
+        <p class="capture-hint capture-mode"><strong>@preset.Label</strong></p>
+        <p class="capture-hint capture-summary">@ReferenceReels.CharacterCaptureSummary(Draft)</p>
+        <p class="capture-hint capture-purpose">Intended purpose: @preset.Purpose</p>
+        <p class="capture-hint">Selecting this preset starts at @preset.Seconds.ToString("0") requested seconds in Silent mode. Compose timing needs at least @preset.MinimumSeconds.ToString("0") requested seconds. Change Requested seconds or Voice mode in the reel settings, then compose or revise the pair.</p>
+        <p class="capture-hint">This mode has its own fixed choreography and a final cut to the face. Use Instructions to direct Assist, or choose Custom for a different plan. Existing prompt texts are not overwritten.</p>
+        @if (Draft.Framing == ReelFraming.CharacterNeutralTurntable && Draft.Duration < 8)
+        {
+            <p class="capture-hint" role="status">Below 8 requested seconds, the neutral turntable uses five held principal views with clean cuts, not a continuous orbit.</p>
+        }
+    }
+    <p class="capture-hint">Assist chooses face, body and one outfit reference from the pictures. Use picture guidance or Instructions to override those choices. Review the generated views and outfit continuity before reusing the reel. These plans describe intended coverage, not verified reconstruction.</p>
+    @if (ReferenceReels.ShowKeyframeHint(Draft))
+    {
+        <p class="capture-hint reel-keyframe-hint">@ReferenceReels.LongReelKeyframeHint</p>
+    }
+}
+
+@code {
+    [Parameter, EditorRequired] public ReferenceReelDraft Draft { get; set; } = null!;
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public EventCallback Changed { get; set; }
+
+    private async Task ChangeArticulation(ChangeEventArgs e)
+    {
+        if (Disabled || !ReferenceReels.HasCharacterCaptureOptions(Draft) || Draft.Duration < 9 ||
+            !Enum.TryParse<ReelArticulation>(e.Value?.ToString(), out var value) || !Enum.IsDefined(value) ||
+            value == ReferenceReels.SelectedArticulation(Draft)) return;
+        Draft.CaptureArticulation = value;
+        Draft.CheckedInputs = null;
+        await Changed.InvokeAsync();
+    }
+    private async Task ChangeCloseUp(ChangeEventArgs e)
+    {
+        if (Disabled || !ReferenceReels.HasCharacterCaptureOptions(Draft) || Draft.Duration < 8 ||
+            !Enum.TryParse<ReelCloseUpTransition>(e.Value?.ToString(), out var value) || !Enum.IsDefined(value) ||
+            value == ReferenceReels.SelectedCloseUp(Draft)) return;
+        Draft.CaptureCloseUp = value;
+        Draft.CheckedInputs = null;
+        await Changed.InvokeAsync();
+    }
+}

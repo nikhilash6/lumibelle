@@ -1,0 +1,23 @@
+.crop-thumbnail {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    overflow: hidden;
+    border-radius: var(--lumi-radius-small);
+    background: var(--lumi-surface-subtle);
+}
+
+.crop-thumbnail-region { position: relative; overflow: hidden; flex: none; }
+
+.crop-thumbnail .crop-thumbnail-region img {
+    position: absolute;
+    display: block;
+    max-width: none;
+    max-height: none;
+    border-radius: 0;
+    object-fit: fill;
+    image-orientation: from-image;
+}
+
+.crop-thumbnail > span { font-size: var(--lumi-font-size-small); text-align: center; }

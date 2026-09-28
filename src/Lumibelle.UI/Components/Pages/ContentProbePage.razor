@@ -1,0 +1,245 @@
+@page "/settings/ai/probes"
+@using lumibelle.Models
+@using lumibelle.Services.AI
+@using lumibelle.Components.AI
+@implements IDisposable
+
+<PageTitle>Text model tests · Lumibelle</PageTitle>
+<div class="probe-workbench ai-settings-form">
+    <header class="probe-heading">
+        <a href="/settings/ai?tab=text">← AI settings</a>
+        <h1>Text model tests</h1>
+        <p>Compare writing responses from models and profiles. Rate request fulfillment—not explicitness or an official age rating.</p>
+    </header>
+    @if (_error is not null)
+    {
+        <div class="probe-error" role="alert">@_error <button type="button" @onclick="() => _error = null">Dismiss</button></div>
+    }
+    <p class="probe-feedback" role="status">@_message</p>
+    @if (_library is null || _settings is null)
+    {
+        <p role="status">@(_loading ? "Loading saved tests and configurations…" : "The test library is unavailable.")</p>
+        @if (!_loading) { <button type="button" @onclick="ReloadLibraryAsync">Try again</button> }
+    }
+    else
+    {
+        <section class="probe-card" aria-labelledby="probe-library-title">
+            <div class="probe-section-heading"><h2 id="probe-library-title">Test library</h2>
+                <div class="probe-actions">
+                    <button type="button" @onclick="NewProbe" disabled="@SelectionLocked">New test</button>
+                    <button type="button" @onclick="SelectEnabledTests" disabled="@SelectionLocked">Select enabled</button>
+                    <button type="button" @onclick="() => _selectedTests.Clear()" disabled="@SelectionLocked">Clear selection</button>
+                    <button type="button" @onclick="ReloadLibraryAsync" disabled="@SelectionLocked">Reload saved tests and profiles</button>
+                </div>
+            </div>
+            <p class="probe-hint">Starter tests are non-graphic. Duplicate them to customize; disabling or deleting a test never changes saved responses.</p>
+            <div class="probe-table-scroll">
+                <table class="probe-table"><caption class="sr-only">Writing test library</caption><thead><tr><th scope="col">Run</th><th scope="col">Test</th><th scope="col">Category</th><th scope="col">Actions</th></tr></thead><tbody>
+                @foreach (var probe in Definitions)
+                {
+                    <tr @key="probe.Id">
+                        <td><input type="checkbox" aria-label="@("Select test " + probe.Name)" checked="@_selectedTests.Contains(probe.Id)"
+                                   disabled="@(SelectionLocked || !probe.Enabled)" @onchange="e => SelectTest(probe.Id, e)" /></td>
+                        <td><strong>@probe.Name</strong><span class="probe-meta">@(ContentProbeBuiltIns.IsBuiltIn(probe.Id) ? "Starter" : "Custom") · revision @probe.Revision @(!probe.Enabled ? "· Disabled" : "")</span></td>
+                        <td>@probe.Category</td>
+                        <td><div class="probe-actions">
+                            <button type="button" @onclick="() => EditProbe(probe)" disabled="@SelectionLocked">@(ContentProbeBuiltIns.IsBuiltIn(probe.Id) ? "View" : "Edit")</button>
+                            <button type="button" @onclick="() => DuplicateProbe(probe)" disabled="@SelectionLocked">Duplicate</button>
+                            <button type="button" @onclick="() => EnableProbeAsync(probe)" disabled="@SelectionLocked">@(probe.Enabled ? "Disable" : "Enable")</button>
+                            @if (!ContentProbeBuiltIns.IsBuiltIn(probe.Id)) { <button type="button" @onclick="() => _deleteProbe = probe.Id" disabled="@SelectionLocked">Delete</button> }
+                        </div>
+                        @if (_deleteProbe == probe.Id)
+                        {
+                            <div role="alert">Delete this custom test? Saved responses and ratings will remain.
+                                <button type="button" @onclick="() => DeleteProbeAsync(probe.Id)" disabled="@SelectionLocked">Confirm delete</button>
+                                <button type="button" @onclick="() => _deleteProbe = null">Keep test</button>
+                            </div>
+                        }
+                        </td>
+                    </tr>
+                }
+                </tbody></table>
+            </div>
+            @if (_editing is not null)
+            {
+                <form class="probe-editor" @onsubmit="SaveProbeAsync" @onsubmit:preventDefault>
+                    <h3>@(_editorReadOnly ? "Starter test" : "Edit test")</h3>
+                    <fieldset disabled="@(_editorReadOnly || SelectionLocked)">
+                        <div class="probe-two-columns">
+                            <label for="probe-name">Name<input id="probe-name" maxlength="120" required @bind="_editName" /></label>
+                            <label for="probe-category">Category<input id="probe-category" maxlength="80" required @bind="_editCategory" /></label>
+                        </div>
+                        <label for="probe-prompt">Prompt<textarea id="probe-prompt" rows="6" maxlength="12000" required @bind="_editPrompt" @bind:event="oninput"></textarea></label>
+                        <label for="probe-criteria">What does a 5 mean? <span class="probe-hint">Optional success criteria, shown to the reviewer—not sent to the model.</span>
+                            <textarea id="probe-criteria" rows="3" maxlength="4000" @bind="_editCriteria"></textarea></label>
+                        <label for="probe-phrases">Required words or phrases <span class="probe-hint">Optional, one per line. Literal, case-insensitive checks; not an automatic pass.</span>
+                            <textarea id="probe-phrases" rows="3" @bind="_editPhrases"></textarea></label>
+                        <label class="probe-check"><input id="probe-refusal-marker" type="checkbox" @bind="_editMarker" /> Append the standard NO refusal instruction</label>
+                        <p class="probe-hint">Disable this when NO could be a legitimate task answer. With it disabled, NO is not automatically classified as a refusal.</p>
+                    </fieldset>
+                    <details><summary>Full prompt preview</summary><pre>@EditorPrompt</pre></details>
+                    <div class="probe-actions">
+                        @if (!_editorReadOnly) { <button type="submit" disabled="@SelectionLocked">Save test</button> }
+                        <button type="button" @onclick="() => _editing = null" disabled="@_busy">@(_editorReadOnly ? "Close" : "Cancel edit")</button>
+                    </div>
+                </form>
+            }
+        </section>
+
+        <section class="probe-card" aria-labelledby="probe-run-title">
+            <div class="probe-section-heading"><h2 id="probe-run-title">Configurations to compare</h2>
+                <button type="button" @onclick="CheckModelsAsync" disabled="@SelectionLocked">Check availability</button>
+            </div>
+            <p class="probe-hint">Saved profiles, starred models, and the global default. Each response uses a fresh conversation and the selected configuration's temperature, reasoning, and output settings.</p>
+            <div class="probe-configurations">
+                @foreach (var model in ModelChoices)
+                {
+                    var key = TextModelProfiles.ChoiceKey(model);
+                    <label class="probe-model-choice" @key="key">
+                        <input type="checkbox" checked="@_selectedModels.Contains(key)" disabled="@SelectionLocked" @onchange="e => SelectModel(key, e)" />
+                        <span><strong>@model.Backend · @TextModelPolicy.DisplayName(model, _settings)</strong>
+                            <span class="probe-meta">@model.Model @(model.ProfileId is null ? "· Base model" : "· Profile")</span>
+                            <span class="probe-meta">@TextModelProfiles.Describe(model)</span>
+                            <span class="probe-meta">@Availability(model)</span>
+                        </span>
+                    </label>
+                }
+            </div>
+            @if (!ModelChoices.Any()) { <p>No saved configurations. <a href="/settings/ai?tab=text">Star a model or create a profile.</a></p> }
+            <div class="probe-run-controls">
+                <label for="probe-repeats">Responses per test/configuration<select id="probe-repeats" @bind="_repetitions" disabled="@SelectionLocked"><option value="1">1</option><option value="2">2</option><option value="3">3</option></select></label>
+                <span>@RequestCount request(s) · maximum @ContentProbePolicy.MaximumBatch</span>
+                <button type="button" @onclick="PrepareAsync" disabled="@(SelectionLocked || RequestCount is < 1 or > ContentProbePolicy.MaximumBatch)">Prepare run</button>
+            </div>
+            <p class="probe-hint">Preparation checks availability without generating. Running uses the shared AI queue and may incur provider charges. Paused providers stay paused. The starter set does not test graphic sexual content.</p>
+            @if (_plan is not null)
+            {
+                <section class="probe-confirmation" aria-labelledby="probe-confirm-title">
+                    <h3 id="probe-confirm-title">Review the captured run</h3>
+                    <p>@_plan.Count requests prepared. @_confirmed.Count confirmed in the queue. Requests may start as soon as they are queued.</p>
+                    @foreach (var request in PlannedRequests.DistinctBy(r => TextModelProfiles.ChoiceKey(r.Model)))
+                    {
+                        <p><strong>@request.Model.Backend · @request.Model.Name</strong> · @TextModelProfiles.Describe(request.Model)
+                            @if (request.Model.Backend == AiBackend.ComfyUI) { <span> · effective temperature @(request.Model.Temperature ?? request.Settings.Temperature) · output @(request.Model.MaxOutputTokens ?? request.Settings.MaxOutputTokens)</span> }
+                            @if (request.Codex is { } capture) { <span> · resolved reasoning @capture.Effort</span> }
+                        </p>
+                    }
+                    @foreach (var request in PlannedRequests.DistinctBy(r => r.Probe.Id))
+                    {
+                        <details><summary>@request.Probe.Name · exact outgoing prompt</summary><pre>@request.SubmittedPrompt</pre></details>
+                    }
+                    <div class="probe-actions">
+                        <button type="button" @onclick="EnqueuePlanAsync" disabled="@_busy">@(_confirmed.Count == 0 ? $"Run {_plan.Count} requests" : "Continue queueing this run")</button>
+                        <button type="button" @onclick="DiscardPlan" disabled="@_busy">Discard unqueued requests</button>
+                    </div>
+                    <p class="probe-hint">Retrying queueing uses the same request IDs. Discarding this plan does not cancel requests already accepted into the queue.</p>
+                </section>
+            }
+        </section>
+
+        <section class="probe-card" aria-labelledby="probe-responses-title">
+            <div class="probe-section-heading"><h2 id="probe-responses-title">Response review</h2><button type="button" @onclick="RefreshRowsAsync" disabled="@_rowsLoading">Refresh responses</button></div>
+            <details><summary>Request fulfillment scale</summary>
+                @foreach (var description in ContentProbePolicy.Scale) { <p>@description</p> }
+                <p>A more explicit answer is not necessarily a better answer. Honor the prompt's boundaries. No rating is assigned automatically.</p>
+            </details>
+            <div class="probe-filters">
+                <label for="probe-test-filter">Test<select id="probe-test-filter" @bind="_testFilter" @bind:after="ResetPage"><option value="">All tests</option>
+                    @foreach (var item in _rows.Select(r => r.Request.Probe).DistinctBy(p => p.Id)) { <option value="@item.Id.ToString()">@item.Name</option> }
+                </select></label>
+                <label for="probe-category-filter">Category<select id="probe-category-filter" @bind="_categoryFilter" @bind:after="ResetPage"><option value="">All categories</option>
+                    @foreach (var category in _rows.Select(r => r.Request.Probe.Category).Distinct().Order()) { <option value="@category">@category</option> }
+                </select></label>
+                <label for="probe-model-filter">Configuration<select id="probe-model-filter" @bind="_modelFilter" @bind:after="ResetPage"><option value="">All configurations</option>
+                    @foreach (var model in _rows.Select(r => r.Request.Model).DistinctBy(TextModelProfiles.ChoiceKey)) { <option value="@TextModelProfiles.ChoiceKey(model)">@ModelLabel(model)</option> }
+                </select></label>
+                <label for="probe-outcome-filter">Automatic outcome<select id="probe-outcome-filter" @bind="_outcomeFilter" @bind:after="ResetPage"><option value="">All outcomes</option>
+                    @foreach (var outcome in Enum.GetValues<ContentProbeOutcome>()) { <option value="@outcome.ToString()">@ContentProbePolicy.Label(outcome)</option> }
+                </select></label>
+                <label class="probe-check"><input id="probe-unrated-filter" type="checkbox" @bind="_unratedOnly" @bind:after="ResetPage" /> Unrated, ready to review</label>
+                <label class="probe-check"><input id="probe-hide-models" type="checkbox" @bind="_hideModelNames" /> Hide configuration names</label>
+            </div>
+            <p class="probe-hint">@FilteredRows.Count matching responses; @_rows.Count of @_totalResponses loaded. Name hiding does not redact the model's own response text.</p>
+            @foreach (var warning in _historyWarnings) { <p class="probe-error" role="alert">@warning</p> }
+            <div class="probe-table-scroll">
+                <table class="probe-table probe-responses"><caption class="sr-only">Test responses and human ratings</caption>
+                    <thead><tr><th scope="col">Test / run</th><th scope="col">Configuration</th><th scope="col">Response preview</th><th scope="col">Automatic outcome</th><th scope="col">Your rating</th></tr></thead>
+                    <tbody>
+                    @foreach (var row in PagedRows)
+                    {
+                        <tr @key="row.Job.Id" data-probe-job="@row.Job.Id">
+                            <td>@row.Request.Probe.Name<span class="probe-meta">Revision @row.Request.Probe.Revision · response @row.Request.Iteration<br />@row.Job.CreatedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</span></td>
+                            <td>@ModelLabel(row.Request.Model)</td>
+                            <td><div class="probe-preview">@Preview(row)</div><button type="button" @onclick="() => OpenResponse(row)">Expand response</button></td>
+                            <td>@Status(row)
+                                @if (row.Request.Probe.RequiredPhrases.Count > 0 && row.Result is { Complete: true })
+                                { <span class="probe-meta">Phrases: @(row.Request.Probe.RequiredPhrases.Count - ContentProbePolicy.MissingPhrases(row.Request, row.Result).Count)/@row.Request.Probe.RequiredPhrases.Count present · not a pass</span> }
+                                @if (row.Job.State is AiJobState.Waiting or AiJobState.Running || row.Job.RemoteUnconfirmed)
+                                { <button type="button" @onclick="() => CancelJobAsync(row.Job.Id)" disabled="@_busy">Cancel test</button> }
+                                else if (row.Job.CanRetryCaptured)
+                                { <button type="button" @onclick="() => RecoverJobAsync(row.Job.Id)" disabled="@_busy">Recover saved output</button> }
+                            </td>
+                            <td><ContentProbeRating Value="ContentProbePolicy.CurrentScore(row)" ValueChanged="score => RateAsync(row, score)" Disabled="@(!ContentProbePolicy.CanRate(row) || _ratingBusy.Contains(row.Job.Id))" />
+                                @if (!ContentProbePolicy.CanRate(row)) { <span class="probe-meta">Not rateable</span> }
+                                @if (row.Review.Notes.Length > 0) { <span class="probe-meta">Review notes saved</span> }
+                            </td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+            @if (_rows.Count == 0) { <p>No responses yet. Prepare and run a selection of tests above.</p> }
+            <div class="probe-actions probe-pagination">
+                <button type="button" @onclick="() => _page--" disabled="@(_page <= 0)">Previous</button><span>Page @(Math.Min(_page, PageCount - 1) + 1) of @PageCount</span>
+                <button type="button" @onclick="() => _page++" disabled="@(_page >= PageCount - 1)">Next</button>
+                @if (_rows.Count < _totalResponses) { <button type="button" @onclick="LoadOlderAsync" disabled="@_rowsLoading">Load 200 older responses</button> }
+            </div>
+            @if (!_hideModelNames && FilteredRows.Count > 0)
+            {
+                <details class="probe-summary"><summary>Summary of loaded, filtered responses</summary>
+                    <p class="probe-hint">Only human ratings are averaged. Different prompt revisions and captured configurations are separate groups. Pending, failed, blocked, and truncated requests are not ratings.</p>
+                    <div class="probe-table-scroll"><table class="probe-table"><caption class="sr-only">Fulfillment summary by exact test and configuration</caption>
+                        <thead><tr><th scope="col">Test</th><th scope="col">Configuration</th><th scope="col">Mean / 5</th><th scope="col">Rated / responses</th><th scope="col">Refusals</th></tr></thead><tbody>
+                        @foreach (var summary in ContentProbePolicy.Summaries(FilteredRows))
+                        {
+                            <tr><td>@summary.Test · revision @summary.ProbeRevision</td><td>@summary.Configuration<span class="probe-meta">Comparison @(summary.Key[..8])</span></td>
+                                <td>@(summary.Average?.ToString("0.0") ?? "Unrated")</td><td>@summary.Rated / @summary.Responses</td><td>@summary.Refused</td></tr>
+                        }
+                        </tbody></table></div>
+                </details>
+            }
+        </section>
+
+        @if (OpenedRow is { } opened)
+        {
+            <section class="probe-card probe-response-details" aria-labelledby="probe-response-title">
+                <div class="probe-section-heading"><h2 id="probe-response-title" tabindex="-1" @ref="_responseHeading">@opened.Request.Probe.Name · response @opened.Request.Iteration</h2><button type="button" @onclick="CloseResponse">Close response</button></div>
+                <p>@ModelLabel(opened.Request.Model) · @Status(opened)</p>
+                @if (!_hideModelNames)
+                {
+                    <p class="probe-hint">@TextModelProfiles.Describe(opened.Request.Model)</p>
+                    @if (opened.Request.Model.Backend == AiBackend.ComfyUI)
+                    { <p class="probe-hint">Captured ComfyUI temperature: @(opened.Request.Model.Temperature ?? opened.Request.Settings.Temperature). Output limit: @(opened.Request.Model.MaxOutputTokens ?? opened.Request.Settings.MaxOutputTokens). ComfyUI limit detection depends on reported token progress.</p> }
+                    @if (opened.Request.Codex is { } capture) { <p class="probe-hint">Captured Codex effort: @capture.Effort.</p> }
+                    @if (opened.Result is { } result) { <p class="probe-hint">Reported model: @(result.ReturnedModel ?? "Not reported") · provider: @(result.OpenRouterUsage?.Provider ?? "Not reported") · finish: @(result.FinishReason ?? "Not reported")</p> }
+                }
+                <details open><summary>Exact submitted prompt</summary><pre>@opened.Request.SubmittedPrompt</pre></details>
+                <h3>What does a 5 mean?</h3><p class="probe-preserve">@(string.IsNullOrWhiteSpace(opened.Request.Probe.SuccessCriteria) ? "No custom criteria. Judge fulfillment of the exact request and its boundaries." : opened.Request.Probe.SuccessCriteria)</p>
+                <h3>Response</h3><pre class="probe-full-response">@(opened.Result?.Raw ?? "No response text saved.")</pre>
+                @if (!string.IsNullOrEmpty(opened.Result?.ApiRefusal)) { <h3>Provider refusal signal</h3><pre>@opened.Result.ApiRefusal</pre> }
+                @if (opened.Job.Error is { } error) { <p class="probe-error">@error</p> }
+                @if (opened.Request.Probe.RequiredPhrases.Count > 0)
+                { <p>Missing phrases: @(ContentProbePolicy.MissingPhrases(opened.Request, opened.Result) is { Count: > 0 } missing ? string.Join(", ", missing) : "None"). Phrase presence alone does not establish fulfillment.</p> }
+                <h3>Your request fulfillment rating</h3>
+                <ContentProbeRating Value="_detailReview?.Score" ValueChanged="RateDetailAsync" Disabled="@(!ContentProbePolicy.CanRate(opened) || _ratingBusy.Contains(opened.Job.Id))" />
+                <label for="probe-review-notes">Review notes<textarea id="probe-review-notes" rows="3" maxlength="2000" @bind="_notes" @bind:event="oninput" disabled="@(!ContentProbePolicy.CanRate(opened) || _ratingBusy.Contains(opened.Job.Id))"></textarea></label>
+                <div class="probe-actions">
+                    <button type="button" @onclick="SaveNotesAsync" disabled="@(!ContentProbePolicy.CanRate(opened) || _ratingBusy.Contains(opened.Job.Id))">Save notes</button>
+                    <button type="button" @onclick="() => ReloadReviewDraftAsync(opened.Job.Id)" disabled="@_ratingBusy.Contains(opened.Job.Id)">Discard review draft and reload</button>
+                    <button type="button" @onclick="() => PrepareRepeat(opened)" disabled="@(SelectionLocked || opened.Job.LocksTarget || opened.Job.RemoteUnconfirmed)">Prepare repeat of captured test</button>
+                </div>
+                <p class="probe-hint">Scores save when clicked; notes save with a score or with Save notes. Rating and editing notes never sends a model request.</p>
+            </section>
+        }
+    }
+</div>

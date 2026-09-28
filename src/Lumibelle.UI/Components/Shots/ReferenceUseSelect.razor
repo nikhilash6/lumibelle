@@ -1,0 +1,32 @@
+<label class="reference-use">Use for<select aria-label="Use for" value="@Value" @onchange="Change">
+    @if (AllowInference) { <option value="infer">Let AI decide</option> }
+    @if (Image.RepresentsId is not null) {
+        <option value="">Choose purpose…</option>
+        @foreach (var purpose in Purposes) { <option value="purpose:@purpose">@ShotLooks.Label(purpose)</option> }
+    }
+    @foreach (var use in Enum.GetValues<ShotImageUse>()) { <option value="use:@use" disabled="@(Occupied(use) is not null)">@ReferenceSetups.UseLabel(use)@Occupied(use)</option> }
+</select></label>
+@code {
+    [Parameter, EditorRequired] public ShotImageBinding Image { get; set; } = null!;
+    [Parameter, EditorRequired] public Shot Shot { get; set; } = null!;
+    [Parameter] public EventCallback<ShotImageBinding> Changed { get; set; }
+    [Parameter] public bool AllowInference { get; set; }
+    private string Value => Image.InferUsage ? "infer" : Image.RepresentsId is not null ? Image.Purpose is { } p ? $"purpose:{p}" : "" : $"use:{ReferenceSetups.NonCharacterUse(Image)}";
+    private IEnumerable<ShotReferencePurpose> Purposes {
+        get { yield return ShotReferencePurpose.Identity; var appearance = ShotReferences.Characters(Shot).FirstOrDefault(c => c.Id == Image.RepresentsId)?.Appearance;
+            if (appearance?.EndLookId is not null) { yield return ShotReferencePurpose.StartingLook; yield return ShotReferencePurpose.EndingLook; }
+            else if (appearance is not null) yield return ShotReferencePurpose.CurrentLook;
+            if (Image.Purpose is { } current && current != ShotReferencePurpose.Identity && (appearance is null || current == ShotReferencePurpose.CurrentLook && appearance.EndLookId is not null || current != ShotReferencePurpose.CurrentLook && appearance.EndLookId is null)) yield return current;
+        }
+    }
+    private Task Change(ChangeEventArgs e) {
+        var value = e.Value?.ToString() ?? ""; var copy = ShotCopy.Of(Image); copy.InferUsage = false;
+        if (value == "infer" && AllowInference) { copy.InferUsage = true; copy.Purpose = null; copy.Use = null; copy.Role = "Let AI decide"; }
+        else if (value.StartsWith("purpose:") && Enum.TryParse<ShotReferencePurpose>(value[8..], out var p)) { copy.Purpose = p; copy.Use = null; copy.Role = ShotLooks.Label(p); }
+        else if (value.StartsWith("use:") && Enum.TryParse<ShotImageUse>(value[4..], out var u) && Occupied(u) is null) { copy.RepresentsId = null; copy.Purpose = null; copy.Use = u; copy.Role = ReferenceSetups.UseLabel(u); }
+        else return Task.CompletedTask;
+        return Changed.InvokeAsync(copy);
+    }
+    private string? Occupied(ShotImageUse use) => use is ShotImageUse.FirstFrame or ShotImageUse.LastFrame && Shot.Images.FirstOrDefault(i => i.Id != Image.Id && i.Use == use) is { } other
+        ? $" · Picture {Shot.Images.IndexOf(other) + 1} already assigned" : null;
+}

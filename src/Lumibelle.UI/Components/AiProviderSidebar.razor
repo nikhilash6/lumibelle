@@ -1,0 +1,39 @@
+<div class="ai-provider-sidebar" role="tablist" aria-label="@Label" aria-orientation="vertical">
+    @for (var i = 0; i < Entries.Length; i++)
+    {
+        var index = i; var provider = Entries[index];
+        <button type="button" role="tab" id="@(TabPrefix + provider.Key)" aria-label="@provider.Label" aria-controls="@(PanelPrefix + provider.Key)"
+                class="@(provider.Key == DefaultsKey ? "ai-provider-defaults" : null)"
+                aria-selected="@(Selection == provider.Key ? "true" : "false")" tabindex="@(Selection == provider.Key ? 0 : -1)"
+                @ref="_elements[index]" @onclick="() => SelectionChanged.InvokeAsync(provider.Key)" @onkeydown="args => OnKeyAsync(args, index)">
+            <strong>@provider.Label</strong><span>@provider.Kind</span>
+        </button>
+    }
+</div>
+
+@code {
+    public static readonly (string Key, string Label, string Kind)[] Providers =
+        [("comfyui", "ComfyUI", "Server"), ("openrouter", "OpenRouter", "Cloud API"), ("codex", "Codex", "Local CLI"), ("claudecode", "Claude Code", "Local CLI")];
+    // The entry for settings that apply across a tab's providers, shown last.
+    public const string DefaultsKey = "defaults";
+    [Parameter, EditorRequired] public string Label { get; set; } = "";
+    [Parameter, EditorRequired] public string TabPrefix { get; set; } = "";
+    [Parameter, EditorRequired] public string PanelPrefix { get; set; } = "";
+    [Parameter, EditorRequired] public string Selection { get; set; } = "comfyui";
+    [Parameter] public EventCallback<string> SelectionChanged { get; set; }
+    [Parameter] public string? DefaultsLabel { get; set; }
+    [Parameter] public string DefaultsKind { get; set; } = "All providers";
+    // Tabs other than Connections and Text models list their own entries, such as image workflows.
+    [Parameter] public IReadOnlyList<(string Key, string Label, string Kind)>? Items { get; set; }
+    private (string Key, string Label, string Kind)[] Entries => [.. Items ?? Providers, .. DefaultsLabel is null ? [] : new[] { (DefaultsKey, DefaultsLabel, DefaultsKind) }];
+    private ElementReference[] _elements = [];
+    protected override void OnParametersSet() { if (_elements.Length != Entries.Length) _elements = new ElementReference[Entries.Length]; }
+    private async Task OnKeyAsync(KeyboardEventArgs args, int index)
+    {
+        var count = Entries.Length;
+        var next = args.Key switch { "ArrowDown" => (index + 1) % count, "ArrowUp" => (index + count - 1) % count, "Home" => 0, "End" => count - 1, _ => index };
+        if (next == index) return;
+        await SelectionChanged.InvokeAsync(Entries[next].Key);
+        await _elements[next].FocusAsync();
+    }
+}

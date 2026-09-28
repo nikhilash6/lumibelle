@@ -1,0 +1,16 @@
+@inherits ProjectAwareComponent
+<Router AppAssembly="typeof(Routes).Assembly" AdditionalAssemblies="AdditionalAssemblies" NotFoundPage="typeof(Pages.NotFound)">
+    <Found Context="routeData">
+        <RouteView RouteData="routeData" DefaultLayout="typeof(Layout.MainLayout)" />
+        <FocusOnNavigate RouteData="routeData" Selector="h1" />
+    </Found>
+</Router>
+
+@code {
+    protected override async Task OnInitializedAsync()
+    {
+        try { if (ProjectRoutes is not null) await ProjectRoutes.RefreshAsync(); }
+        catch (Exception e) when (e is ProjectStoreException or WorkspaceStoreException) { /* The project page presents storage errors. */ }
+    }
+    [Parameter] public IEnumerable<System.Reflection.Assembly>? AdditionalAssemblies { get; set; }
+}

@@ -1,0 +1,13 @@
+@inject AppearanceState Appearance
+@implements IDisposable
+<MudMenu Icon="@Icons.Material.Outlined.Contrast" AriaLabel="Appearance" title="Appearance" Disabled="@(!Appearance.Initialized)" Dense="true" AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight" Class="appearance-menu">
+    @foreach (var preference in Enum.GetValues<ThemePreference>())
+    {
+        <MudMenuItem OnClick="() => Appearance.SetAsync(preference)" aria-label="@($"{preference} appearance{(Appearance.Preference == preference ? ", selected" : "")}")" Icon="@(Appearance.Preference == preference ? Icons.Material.Outlined.Check : null)">@preference</MudMenuItem>
+    }
+</MudMenu>
+@code {
+    protected override void OnInitialized() => Appearance.Changed += Changed;
+    private void Changed() => _ = InvokeAsync(StateHasChanged);
+    public void Dispose() => Appearance.Changed -= Changed;
+}

@@ -1,0 +1,135 @@
+import { test, expect } from './fixtures.js';
+test.beforeEach(async ({ request }) => { await request.post('/fixtures/generation-setups/reset'); });
+import { toolsTab, openShotSetup, closeShotSetup } from './workspace-tools.js';
+
+test('takes compare shared shot inputs across generation setups and remain usable', async ({ page, request }) => {
+  test.setTimeout(120000);
+  page.setDefaultTimeout(15000);
+  await page.setViewportSize({ width: 1173, height: 1272 });
+  const { id } = await (await request.get('/fixtures/new')).json();
+  await request.post(`/fixtures/${id}/approved`);
+  await request.post(`/fixtures/${id}/images`);
+  await request.post(`/fixtures/${id}/production-shot`);
+  expect((await request.post(`/fixtures/${id}/take-generation-setup`)).ok()).toBe(true);
+  const shots = async () => (await request.get(`/fixtures/${id}/shots`)).json();
+  const setups = async () => (await (await request.get(`/fixtures/${id}/production`)).json()).compositions;
+  const original = (await setups())[0];
+  const tab = name => page.locator('[data-workspace-group=center]').getByRole('tab', { name, exact: true });
+  await page.goto(`/projects/${id}/shots`);
+  await toolsTab(page, 'Generate');
+  await closeShotSetup(page);
+  await page.getByRole('button', { name: 'Generate takes', exact: true }).click();
+  await expect.poll(async () => (await shots()).takes.length, { timeout: 45000 }).toBe(2);
+  await page.locator('.shot-review-dialog').getByRole('button', { name: 'Close', exact: true }).click();
+  await tab('Takes').click();
+  const cards = page.locator('.unified-take-card');
+  await expect(cards).toHaveCount(2);
+  await expect(cards.locator('.take-input-changes')).toHaveCount(0);
+  const changes = page.getByLabel('Filter takes by input changes', { exact: true });
+  await changes.selectOption('current'); await expect(cards).toHaveCount(2);
+  await changes.selectOption('changed'); await expect(cards).toHaveCount(0);
+  await expect(page.getByText('No takes match these filters.', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Clear filters', exact: true }).click();
+  await expect(cards).toHaveCount(2);
+
+  // Closing the prompt dialog must not discard the edits that Undo can restore.
+  await openShotSetup(page);
+  const editor = page.getByRole('textbox', { name: 'H3 prompt', exact: true });
+  const undo = page.getByRole('button', { name: 'Undo prompt edit', exact: true });
+  const redo = page.getByRole('button', { name: 'Redo prompt edit', exact: true });
+  await editor.fill('A temporary prompt edit.');
+  await expect.poll(async () => (await setups())[0].prompt).toBe('A temporary prompt edit.');
+  await closeShotSetup(page);
+  await expect(cards.first().locator('.take-input-change')).toHaveText(['Prompt changed']);
+  await openShotSetup(page);
+  await undo.click();
+  await expect.poll(async () => (await setups())[0].prompt).toBe(original.prompt);
+  await expect(undo).toBeDisabled();
+  await expect(redo).toBeEnabled();
+  await closeShotSetup(page);
+  await expect(cards.locator('.take-input-changes')).toHaveCount(0);
+  await openShotSetup(page);
+  await redo.click();
+  await expect.poll(async () => (await setups())[0].prompt).toBe('A temporary prompt edit.');
+  await undo.click();
+  await expect.poll(async () => (await setups())[0].prompt).toBe(original.prompt);
+  await closeShotSetup(page);
+
+  // Generation settings can differ without flagging the shot's authored inputs.
+  await openShotSetup(page, 'Generation settings');
+  await page.getByText('Setup options', { exact: true }).click();
+  await page.getByRole('button', { name: 'Duplicate setup', exact: true }).click();
+  await expect.poll(async () => (await setups()).length).toBe(2);
+  await page.getByText('Setup options', { exact: true }).click();
+  await page.getByLabel('Default resolution', { exact: true }).selectOption('detail');
+  await closeShotSetup(page);
+  await expect(cards.locator('.take-input-changes')).toHaveCount(0);
+  await openShotSetup(page);
+  await page.getByRole('textbox', { name: 'H3 prompt', exact: true }).fill('A revised shot prompt.');
+  await expect.poll(async () => (await setups())[1].prompt).toBe('A revised shot prompt.');
+  await closeShotSetup(page);
+  await tab('Takes').click();
+  await expect(cards.first().locator('.take-input-change')).toHaveText(['Prompt changed']);
+  await openShotSetup(page, 'Generation settings');
+  await page.getByLabel('Named setup', { exact: true }).selectOption(original.generationSetupId);
+  await expect(page.locator('#shot-setup-prompt-panel')).toHaveAttribute('data-setup-id', original.id);
+  await openShotSetup(page);
+  await expect(page.getByRole('textbox', { name: 'H3 prompt', exact: true })).toHaveText('A revised shot prompt.');
+  const changedPrompt = `${original.prompt.replace(/\r\n/g, '\n')}\nThe camera slowly moves closer.`;
+  await page.getByRole('textbox', { name: 'H3 prompt', exact: true }).fill(changedPrompt);
+  await expect.poll(async () => (await setups())[0].prompt).toBe(changedPrompt);
+  await toolsTab(page, 'References');
+  await page.getByRole('button', { name: 'Manage references', exact: true }).click();
+  const picker = page.locator('.manual-reference-dialog');
+  await picker.locator('[data-reference]').first().click();
+  await picker.getByLabel('AI use hint').selectOption('Setting');
+  await picker.getByRole('button', { name: 'Apply changes', exact: true }).click();
+  await expect.poll(async () => (await setups())[0].inputs.images.length).toBe(1);
+  await tab('Takes').click();
+  await expect(cards.first().locator('.take-input-change')).toHaveText(['Prompt changed', 'References changed']);
+  await changes.selectOption('script'); await expect(cards).toHaveCount(0);
+  await page.reload(); await tab('Takes').click();
+  await expect(changes).toHaveValue('script'); await expect(cards).toHaveCount(0);
+  await changes.selectOption('references'); await expect(cards).toHaveCount(2);
+
+  // A saved screenplay edit is picked up when returning to Shots.
+  await page.goto(`/projects/${id}/script`);
+  const screenplay = page.getByRole('textbox', { name: 'Screenplay', exact: true });
+  await screenplay.click(); await screenplay.press('Control+End'); await screenplay.pressSequentially(' I have returned.');
+  await expect.poll(async () => JSON.stringify((await (await request.get(`/fixtures/${id}`)).json()).script.blocks)).toContain('I have returned.');
+  await page.goto(`/projects/${id}/shots?view=Takes`);
+  await expect(cards).toHaveCount(2);
+  const expected = ['Script changed', 'Prompt changed', 'References changed'];
+  await expect(cards.first().locator('.take-input-change')).toHaveText(expected);
+  await expect(cards.last().locator('.take-input-change')).toHaveText(expected);
+  await expect(cards.locator('.take-input-unavailable')).toHaveCount(0);
+  for (const filter of ['changed', 'script', 'prompt', 'references']) {
+    await changes.selectOption(filter); await expect(cards).toHaveCount(2);
+  }
+  for (const filter of ['current', 'unknown']) {
+    await changes.selectOption(filter); await expect(cards).toHaveCount(0);
+  }
+  await changes.selectOption('all');
+  await page.getByLabel('Filter takes by setup', { exact: true }).selectOption((await setups())[1].generationSetupId);
+  await expect(cards).toHaveCount(0);
+  await page.getByRole('button', { name: 'Clear filters', exact: true }).click();
+  await expect(cards).toHaveCount(2);
+  await expect(cards.first().getByRole('button', { name: 'Use this take', exact: true })).toBeEnabled();
+  await cards.first().getByRole('button', { name: 'Use this take', exact: true }).click();
+  await expect.poll(async () => (await shots()).shots[0].selectedTakeId).toBe(await cards.first().getAttribute('data-take-id'));
+  await page.getByRole('button', { name: 'Review latest batch', exact: true }).click();
+  const review = page.locator('.shot-review-dialog');
+  await expect(review.locator('.take-input-change')).toHaveText(expected);
+  await review.getByRole('button', { name: 'Close', exact: true }).click();
+  await page.screenshot({ path: 'artifacts/take-input-changes-light.png' });
+  await page.getByRole('button', { name: 'Appearance', exact: true }).click();
+  await page.getByLabel(/^Dark appearance/).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await expect(page.getByLabel(/^Dark appearance/)).not.toBeVisible();
+  await page.screenshot({ path: 'artifacts/take-input-changes-dark.png' });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(cards.first().locator('.take-input-change')).toHaveText(expected);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: 'artifacts/take-input-changes-phone.png' });
+  await expect(page.locator('#blazor-error-ui')).not.toBeVisible();
+});

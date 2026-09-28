@@ -1,0 +1,38 @@
+@if (Take.Refinement is null)
+{
+    var performance = Take.Snapshot.Performance ?? H3Performance.Legacy;
+    <details class="video-performance-details"><summary>Performance and timings</summary>
+        <p>@H3Policy.QualityLabel(Take.Snapshot.Shot) · @H3Performance.Label(performance.Attention)</p>
+        @if (performance.SolAttention) { <p>Legacy Sol-Attn requested (experimental).</p> }
+        <p class="field-hint">Captured configuration; actual kernel execution is not verified here. Server default follows ComfyUI's launch configuration.</p>
+        <details><summary>Captured profile</summary>
+            @if (Take.Snapshot.PreviewUpscale is { } upscale)
+            {
+                <p>Upscaled preview · @Take.Snapshot.Width × @Take.Snapshot.Height → @upscale.Width × @upscale.Height</p>
+                <p>@(upscale.Implementation == H3UpscalerImplementation.Lbh ? "LBH" : "Plus") · @upscale.Checkpoint · FP16 · offload after upscaling</p>
+            }
+            <p>@(Take.Snapshot.Performance is null ? "Legacy settings (before performance profiles)" : performance.Version) · @performance.Adapter</p>
+            @if (Take.HasLosslessFrames || Take.FrameArchiveRemoval is not null) { <p>Lossless WebP · quality @performance.ArchiveQuality · method @performance.ArchiveMethod</p> }
+            @if (Take.Snapshot.Preset is { } preset) { <p>@preset.Version · @preset.Checkpoint</p><pre>@preset.Inputs</pre> }
+            @if (performance.Attention == H3AttentionBackend.Sage) { <p>Sage auto · compilation disabled</p> }
+            @if (performance.SolAttention)
+            {
+                <p>Sol-Attn adaptive tau @performance.Tau · schedule @performance.StartPercent–@performance.EndPercent · minimum @performance.MinimumTokens tokens · @performance.ExtraTokens extra tokens · no forced dense blocks · @performance.SinkConditioning</p>
+            }
+        </details>
+        <dl>
+            <dt>Preparation</dt><dd>@Seconds(Take.Timings?.PreparationSeconds)</dd>
+            <dt>Sampling</dt><dd>@Seconds(Take.Timings?.SamplingSeconds)</dd>
+            @if (Take.Snapshot.PreviewUpscale is not null) { <dt>Upscaling</dt><dd>@Seconds(Take.Timings?.UpscalingSeconds)</dd> }
+            <dt>Decoding / MP4</dt><dd>@Seconds(Take.Timings?.DecodingSeconds)</dd>
+            <dt>Lossless archive encoding</dt><dd>@(Take.HasLosslessFrames || Take.FrameArchiveRemoval is not null ? Seconds(Take.Timings?.ArchiveSeconds) : "Not requested")</dd>
+            <dt>Transfer / staging save</dt><dd>@Seconds(Take.Timings?.TransferSaveSeconds)</dd>
+        </dl>
+        @if (Take.FrameArchiveRemoval is { } removal) { <p>Lossless archive removed by storage cleanup on @removal.RequestedUtc.ToLocalTime().ToString("g"). Original generation settings and timings are retained.</p> }
+        <p class="field-hint">Observed elapsed time, not GPU profiling. Transfer includes validation and staging; final library publication is excluded. @(Take.Timings is null || Take.Timings.PartialObservation ? "Some stages were not fully observed, for example after reconnecting; their timings are unavailable." : "")</p>
+    </details>
+}
+@code {
+    [Parameter, EditorRequired] public ShotTake Take { get; set; } = null!;
+    private static string Seconds(double? value) => value is { } seconds ? $"{seconds:0.0} s" : "Unavailable";
+}

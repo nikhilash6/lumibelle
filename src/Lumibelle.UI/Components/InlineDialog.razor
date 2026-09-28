@@ -1,0 +1,43 @@
+@* An inline MudDialog reports each close through a continuation on that opening's
+   result, and the continuation does not check whether the dialog was reopened since
+   (MudBlazor 9.9 MudDialog.ShowAsync). A fast close then reopen of the same instance
+   lets the late continuation hide the new opening. Each opening therefore gets a fresh
+   MudDialog; the closed instance's continuation then finds it already hidden. *@
+<MudDialog @key="_opening" Visible="Visible" VisibleChanged="VisibleChanged" Options="Options" Class="@Class"
+           DefaultFocus="DefaultFocus" TitleClass="@TitleClass" ContentClass="@ContentClass" ActionsClass="@ActionsClass"
+           OnKeyDown="OnKeyDown" TitleContent="@(TitleContent ?? StandardTitle)" DialogContent="DialogContent" DialogActions="@(DialogActions ?? StandardActions)" />
+@code {
+    [Parameter] public bool Visible { get; set; }
+    [Parameter] public EventCallback<bool> VisibleChanged { get; set; }
+    [Parameter] public DialogOptions? Options { get; set; }
+    [Parameter] public string? Class { get; set; }
+    [Parameter] public DefaultFocus? DefaultFocus { get; set; }
+    [Parameter] public string? TitleClass { get; set; }
+    [Parameter] public string? ContentClass { get; set; }
+    [Parameter] public string? ActionsClass { get; set; }
+    [Parameter] public EventCallback<KeyboardEventArgs> OnKeyDown { get; set; }
+    [Parameter] public RenderFragment? TitleContent { get; set; }
+    [Parameter] public RenderFragment? DialogContent { get; set; }
+    [Parameter] public RenderFragment? DialogActions { get; set; }
+    // The standard heading and footer, used when TitleContent or DialogActions are not given.
+    [Parameter] public string? Title { get; set; }
+    [Parameter] public string? Context { get; set; }
+    [Parameter] public RenderFragment? Summary { get; set; }
+    [Parameter] public string CloseLabel { get; set; } = "Close dialog";
+    [Parameter] public bool CloseDisabled { get; set; }
+    [Parameter] public RenderFragment? Status { get; set; }
+    [Parameter] public RenderFragment? Actions { get; set; }
+    private int _opening;
+    private bool _closedRendered;
+
+    private RenderFragment? StandardTitle => Title is null ? null :
+        @<DialogHeader Title="@Title" Context="@Context" Summary="Summary" CloseLabel="@CloseLabel" CloseDisabled="CloseDisabled"
+                       Close="@(VisibleChanged.HasDelegate ? EventCallback.Factory.Create(this, () => VisibleChanged.InvokeAsync(false)) : default)" />;
+    private RenderFragment? StandardActions => Status is null && Actions is null ? null :
+        @<text><div class="dialog-status">@Status</div>@Actions</text>;
+
+    // Only replace an instance after it has rendered closed, so its own after-render
+    // step has already closed its dialog rather than leaving it orphaned.
+    protected override void OnParametersSet() { if (Visible && _closedRendered) { _opening++; _closedRendered = false; } }
+    protected override void OnAfterRender(bool firstRender) { if (!Visible) _closedRendered = true; }
+}

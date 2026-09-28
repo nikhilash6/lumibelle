@@ -1,0 +1,71 @@
+@using System.ComponentModel.DataAnnotations
+@inject IProjectStore ProjectStore
+
+<EditForm Model="_model" OnValidSubmit="SaveAsync" FormName="project-details" id="@_formId">
+    <DataAnnotationsValidator />
+    <MudTextField @bind-Value="_model.Name" For="@(() => _model.Name)" Label="Project name"
+                  Variant="Variant.Outlined" Immediate="true" Disabled="_saving"
+                  Placeholder="e.g. The garden at the end of the world" Class="mb-4" />
+    <MudTextField @bind-Value="_model.Description" Label="Description (optional)"
+                  Variant="Variant.Outlined" Immediate="true" Disabled="_saving" Lines="4"
+                  Placeholder="A premise, a mood, a small spark of inspiration…" />
+    @if (_error is not null) { <MudAlert Severity="Severity.Error" Class="mt-4" role="alert">@_error</MudAlert> }
+    @* A containing dialog shows the actions in its footer; the submit button reaches the form through its form attribute. *@
+    @if (ActionsSection is { } section) { <SectionContent SectionId="section">@FormActions</SectionContent> }
+    else { <div class="form-actions">@FormActions</div> }
+</EditForm>
+
+@code {
+    [Parameter] public ProjectInfo? Project { get; set; }
+    [Parameter] public EventCallback<ProjectInfo> OnSaved { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+    [Parameter] public object? ActionsSection { get; set; }
+    [Parameter] public EventCallback<bool> SavingChanged { get; set; }
+    private readonly string _formId = $"project-form-{Guid.NewGuid():N}";
+    private readonly ProjectFormModel _model = new();
+    private bool _saving;
+    private string? _error;
+    private RenderFragment FormActions => @<text>
+        <MudButton OnClick="Cancel" Disabled="_saving">Cancel</MudButton>
+        <MudButton ButtonType="ButtonType.Submit" form="@_formId" Variant="Variant.Filled" Color="Color.Primary" Disabled="_saving">
+            @if (_saving) { <MudProgressCircular Indeterminate="true" Size="Size.Small" Class="mr-2" /> }
+            @(Project is null ? (_saving ? "Creating…" : "Create project") : (_saving ? "Saving…" : "Save changes"))
+        </MudButton></text>;
+
+    protected override void OnInitialized()
+    {
+        _model.Name = Project?.Name ?? "";
+        _model.Description = Project?.Description;
+    }
+
+    private async Task SaveAsync()
+    {
+        if (_saving) return;
+        _saving = true;
+        await SavingChanged.InvokeAsync(true);
+        _error = null;
+        ProjectInfo project;
+        try
+        {
+            project = Project is null
+                ? await ProjectStore.CreateAsync(new(_model.Name, _model.Description))
+                : await ProjectStore.UpdateAsync(Project, new(_model.Name, _model.Description));
+        }
+        catch (Exception exception) when (exception is ProjectStoreException or ValidationException)
+        {
+            _error = exception.Message;
+            _saving = false;
+            await SavingChanged.InvokeAsync(false);
+            return;
+        }
+        await OnSaved.InvokeAsync(project);
+    }
+
+    private Task Cancel() => _saving ? Task.CompletedTask : OnCancel.InvokeAsync();
+    private sealed class ProjectFormModel
+    {
+        [Required(ErrorMessage = "Give your project a name.")]
+        public string Name { get; set; } = "";
+        public string? Description { get; set; }
+    }
+}

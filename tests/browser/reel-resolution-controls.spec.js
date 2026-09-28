@@ -1,0 +1,31 @@
+import { test, expect } from './fixtures.js';
+
+for (const narrow of [false, true]) test(`reel resolution draft controls (${narrow ? 'narrow' : 'desktop'})`, async ({ page, request }) => {
+  const { id } = await (await request.get('/fixtures/new')).json();
+  await request.post(`/fixtures/${id}/images`); await request.post(`/fixtures/${id}/environment-reel-owner`);
+  const library = async () => (await (await request.get(`/fixtures/${id}`)).json()).assets;
+  const owner = (await library()).assets[0];
+  await page.setViewportSize({ width: narrow ? 390 : 1173, height: narrow ? 844 : 1000 });
+  await page.goto(`/projects/${id}/assets?assetId=${owner.id}&view=reels`);
+  await expect(page.locator('.studio-workspace')).toHaveAttribute('data-ready', 'true');
+  await expect(page.locator('.workspace-right')).toBeVisible();
+  await page.getByLabel('Create media type').selectOption('Reel');
+  const resolution = page.getByLabel('Reel resolution', { exact: true });
+  await expect(resolution).toHaveValue('preview');
+  await expect(resolution.locator('option')).toHaveCount(4);
+  await resolution.selectOption('quick');
+  await expect.poll(async () => (await library()).reelDrafts[0]?.resolution).toBe(0);
+  await page.reload();
+  await expect(page.locator('.studio-workspace')).toHaveAttribute('data-ready', 'true');
+  await expect(page.locator('.workspace-right')).toBeVisible();
+  await page.getByLabel('Create media type').selectOption('Reel');
+  await expect(resolution).toHaveValue('quick');
+  await page.locator('.reel-output').getByLabel('Aspect', { exact: true }).selectOption('9:16');
+  await expect(resolution.locator('option[value=quick]')).toContainText('352 × 608');
+  await resolution.selectOption('detail');
+  await expect.poll(async () => (await library()).reelDrafts[0]?.resolution).toBe(2);
+  await resolution.scrollIntoViewIfNeeded();
+  await expect(resolution).toBeInViewport();
+  await page.screenshot({ animations: 'disabled', path: `artifacts/reel-resolution-controls-${narrow ? 'narrow' : 'desktop'}.png` });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+});

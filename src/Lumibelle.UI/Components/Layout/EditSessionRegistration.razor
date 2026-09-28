@@ -1,0 +1,9 @@
+@implements IDisposable
+@inject IServiceProvider Services
+@code {
+    [Parameter, EditorRequired] public Func<Task<bool>> Save { get; set; } = null!;
+    private IDisposable? _registration;
+    protected override void OnInitialized() => _registration = Services.GetService<EditSessionRegistry>()?.Register(() => InvokeAsyncSave());
+    private async Task<bool> InvokeAsyncSave() { bool result = false; await InvokeAsync(async () => result = await Save()); return result; }
+    public void Dispose() => _registration?.Dispose();
+}

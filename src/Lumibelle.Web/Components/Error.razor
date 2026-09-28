@@ -1,0 +1,16 @@
+@page "/Error"
+@using System.Diagnostics
+
+<PageTitle>Something went wrong · Lumibelle</PageTitle>
+<section class="empty-library mt-12">
+    <h1 class="state-title">We couldn’t open that page</h1>
+    <p>Please return to your library and try again.</p>
+    @if (RequestId is not null) { <p>Request reference: <code>@RequestId</code></p> }
+    <MudButton Href="/" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.ArrowBack">Back to your projects</MudButton>
+</section>
+
+@code {
+    [CascadingParameter] private HttpContext? HttpContext { get; set; }
+    private string? RequestId { get; set; }
+    protected override void OnInitialized() => RequestId = Activity.Current?.Id ?? HttpContext?.TraceIdentifier;
+}

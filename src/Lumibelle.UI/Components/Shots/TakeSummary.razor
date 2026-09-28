@@ -1,0 +1,29 @@
+@using lumibelle.Services.Production
+<div class="take-summary">
+    @if (Changes != TakeInputChange.None) {
+        <div class="take-input-changes" aria-label="Take input changes">
+            @if (Changes.HasFlag(TakeInputChange.Script)) { <span class="take-input-change" title="The shot or its script scene has changed since this take was generated.">Script changed</span> }
+            @if (Changes.HasFlag(TakeInputChange.Prompt)) { <span class="take-input-change" title="This take used a different prompt from its current setup.">Prompt changed</span> }
+            @if (Changes.HasFlag(TakeInputChange.References)) { <span class="take-input-change" title="The images, crops, reels, voices, or reference guidance differ from this take’s captured inputs.">References changed</span> }
+            @if (Changes.HasFlag(TakeInputChange.Unavailable)) { <span class="take-input-unavailable" title="The original setup or script snapshot is unavailable, so some inputs cannot be compared.">Comparison incomplete</span> }
+        </div>
+    }
+    <p>@TakeDisplay.Dimensions(Take) · @TakeDisplay.Duration(Take) · @TakeDisplay.Badge(Take)</p>
+    <p>@H3Policy.QualityLabel(Take.Snapshot.Shot) · <span class="take-seed">Seed @Take.Seed</span></p>
+    @if (Take.Snapshot.AppliedLoras is { Count: > 0 } loras)
+    {
+        <p>LoRA@(loras.Count == 1 ? "" : "s") · @string.Join(", ", loras.Select(l => $"{l.Reference.Name} ({l.Strength:0.##})"))</p>
+    }
+    else
+    {
+        <p>No additional LoRA</p>
+    }
+    @if (Take.Snapshot.Production is { } setup) { <p>Setup · @setup.Name</p> }
+    @if (Take.Snapshot.RegenerationSource is { } source) {
+        <p>Regenerated from @source.Width × @source.Height · @(Take.Seed == source.Seed ? "same seed" : "different seed")</p>
+    }
+</div>
+@code {
+    [Parameter, EditorRequired] public ShotTake Take { get; set; } = null!;
+    [Parameter] public TakeInputChange Changes { get; set; }
+}

@@ -1,0 +1,20 @@
+@implements IAsyncDisposable
+@inject IServiceProvider Services
+@inject IJSRuntime JS
+@inject ISnackbar Snackbar
+@code {
+ private IJSObjectReference? _module;
+ private IHostActions? Actions => Services.GetService<IHostActions>();
+ private DotNetObjectReference<HostBridge>? _self;
+ protected override async Task OnAfterRenderAsync(bool firstRender) {
+  if (!firstRender || Actions?.IsDesktop != true) return;
+  _self = DotNetObjectReference.Create(this);
+  _module = await JS.InvokeAsync<IJSObjectReference>("import", UiAssets.Module("host-bridge.js"));
+  await _module.InvokeVoidAsync("mount", _self);
+ }
+ [JSInvokable] public Task SaveResource(string name, string url) => Perform(() => Actions!.SaveResourceAsync(name, url));
+ [JSInvokable] public Task SaveText(string name, string text) => Perform(() => Actions!.SaveTextAsync(name, text));
+ [JSInvokable] public Task OpenExternal(string url) => Perform(() => Actions!.OpenExternalAsync(url));
+ private async Task Perform(Func<Task> operation) { try { await operation(); } catch (Exception e) { Snackbar.Add(e.Message, Severity.Error); } }
+ public async ValueTask DisposeAsync() { try { if (_module is not null) { await _module.InvokeVoidAsync("unmount"); await _module.DisposeAsync(); } } catch (JSDisconnectedException) { } _self?.Dispose(); }
+}

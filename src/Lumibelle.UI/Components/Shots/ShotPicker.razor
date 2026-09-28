@@ -1,0 +1,77 @@
+<section class="shot-picker" aria-label="Choose shots">
+    <div class="picker-filters">
+        <input type="search" aria-label="Search shots in picker" placeholder="Search shots or scenes…" @bind="_search" @bind:event="oninput" />
+        <select aria-label="Filter picker by scene" @bind="_scene">
+            <option value="">All scenes</option>
+            @foreach (var group in Items.GroupBy(SceneKey))
+            {
+                <option value="@group.Key">@group.First().SceneTitle</option>
+            }
+        </select>
+    </div>
+    <div class="picker-selection">
+        <span aria-live="polite"><strong>@SelectedCount selected</strong>@if (HiddenSelectedCount > 0) { <small> · @HiddenSelectedCount outside this view</small> }</span>
+        <div class="picker-selection-actions">
+            <button type="button" @onclick="SelectShown" disabled="@(Disabled || !VisibleItems.Any(i => i.UnavailableReason is null && !SelectedIds.Contains(i.Id)))">Select all shown</button>
+            <button type="button" @onclick="ClearSelection" disabled="@(Disabled || SelectedCount == 0)">Clear selection</button>
+        </div>
+    </div>
+    <div class="picker-list" tabindex="0" aria-label="Available shots">
+        @foreach (var group in VisibleItems.GroupBy(SceneKey))
+        {
+            <div class="picker-scene">
+                <h3>@group.First().SceneTitle <span>@group.Count()</span></h3>
+                @foreach (var item in group)
+                {
+                    <label @key="item.Id" class="picker-row @(SelectedIds.Contains(item.Id) ? "selected" : "") @(item.UnavailableReason is not null ? "unavailable" : "")">
+                        <input type="checkbox" aria-label="Select shot @item.Number: @item.Title" aria-describedby="picker-detail-@item.Id" checked="@SelectedIds.Contains(item.Id)" disabled="@(Disabled || item.UnavailableReason is not null)" @onchange="e => Toggle(item, e.Value is true)" />
+                        <span class="picker-thumbnail">@if (item.ThumbnailUrl is { } url) { <img src="@url" alt="" loading="lazy" /> } else { <span aria-hidden="true">@item.Number.ToString("00")</span> }</span>
+                        <span class="picker-copy">
+                            <span class="picker-title"><span class="picker-number">@item.Number.ToString("00")</span> @item.Title</span>
+                            <span id="picker-detail-@item.Id" class="picker-detail">@item.Duration · @item.TakeCount @(item.TakeCount == 1 ? "take" : "takes")@if (item.HasProductionTake) { <span> · Production take selected</span> }@if (item.UnavailableReason is { } issue) { <span class="picker-issue">@issue</span> }</span>
+                            @if (ItemDetail is not null) { @ItemDetail(item) }
+                        </span>
+                    </label>
+                }
+            </div>
+        }
+        @if (!VisibleItems.Any())
+        {
+            <div class="picker-empty"><strong>@(Items.Count == 0 ? "No shots yet" : "No matching shots")</strong><p>@(Items.Count == 0 ? "Add shots to the project to get started." : "Try another search or scene.")</p>@if (Items.Count > 0) { <button type="button" @onclick="ResetFilters">Reset filters</button> }</div>
+        }
+    </div>
+</section>
+
+@code {
+    [Parameter] public IReadOnlyList<ShotPickerItem> Items { get; set; } = [];
+    [Parameter] public IReadOnlySet<Guid> SelectedIds { get; set; } = new HashSet<Guid>();
+    [Parameter] public EventCallback<HashSet<Guid>> SelectedIdsChanged { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public RenderFragment<ShotPickerItem>? ItemDetail { get; set; }
+
+    private string _search = "", _scene = "";
+    private static string SceneKey(ShotPickerItem item) => item.SceneId?.ToString() ?? $"unassigned:{item.SceneTitle}";
+    private IEnumerable<ShotPickerItem> VisibleItems => Items.Where(i =>
+        (string.IsNullOrEmpty(_scene) || SceneKey(i) == _scene) &&
+        (string.IsNullOrWhiteSpace(_search) || i.Title.Contains(_search.Trim(), StringComparison.OrdinalIgnoreCase) ||
+         i.SceneTitle.Contains(_search.Trim(), StringComparison.OrdinalIgnoreCase) || i.Number.ToString("00") == _search.Trim()));
+    private int SelectedCount => Items.Count(i => SelectedIds.Contains(i.Id));
+    private int HiddenSelectedCount => SelectedCount - VisibleItems.Count(i => SelectedIds.Contains(i.Id));
+
+    private Task Toggle(ShotPickerItem item, bool selected)
+    {
+        if (Disabled || item.UnavailableReason is not null) return Task.CompletedTask;
+        var next = SelectedIds.ToHashSet();
+        if (selected) next.Add(item.Id); else next.Remove(item.Id);
+        return SelectedIdsChanged.InvokeAsync(next);
+    }
+    private Task SelectShown()
+    {
+        if (Disabled) return Task.CompletedTask;
+        var next = SelectedIds.ToHashSet();
+        next.UnionWith(VisibleItems.Where(i => i.UnavailableReason is null).Select(i => i.Id));
+        return SelectedIdsChanged.InvokeAsync(next);
+    }
+    private Task ClearSelection() => Disabled ? Task.CompletedTask : SelectedIdsChanged.InvokeAsync([]);
+    private void ResetFilters() { _search = ""; _scene = ""; }
+}

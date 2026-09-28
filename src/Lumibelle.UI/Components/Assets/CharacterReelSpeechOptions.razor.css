@@ -1,0 +1,15 @@
+.reel-speech { min-width:0; margin:10px 0; }
+.reel-speech-controls { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+.reel-speech label { display:block; min-width:0; font-size:var(--lumi-font-size-meta); }
+.reel-speech select, .reel-speech input, .reel-speech textarea { display:block; box-sizing:border-box; width:100%; min-width:0; padding:7px 8px; margin-top:4px; border:1px solid var(--lumi-control-border); border-radius:var(--lumi-radius-control); color:var(--ink); background:var(--lumi-surface); font:inherit; }
+.reel-speech textarea { resize:vertical; }
+.speech-hint { margin:6px 0; font-size:var(--lumi-font-size-small); color:var(--muted); overflow-wrap:anywhere; }
+.speech-support a { color:var(--plum); }
+.speech-suggestion { margin:10px 0; padding:10px; border:1px solid var(--line); border-radius:var(--lumi-radius-control); background:var(--lumi-surface-subtle); }
+.speech-suggestion strong { font-size:var(--lumi-font-size-meta); }
+.speech-text { white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0; }
+.reel-speech button { padding:6px 9px; border:1px solid var(--line); border-radius:var(--lumi-radius-control); color:var(--plum); background:var(--lumi-surface); cursor:pointer; }
+.reel-speech button:disabled { cursor:default; opacity:.5; }
+.reel-speech :is(button,input,textarea,select):focus-visible { outline:2px solid var(--plum); outline-offset:2px; }
+.speech-error { color:var(--lumi-danger); font-size:var(--lumi-font-size-meta); }
+@media(max-width:639px) { .reel-speech-controls { grid-template-columns:minmax(0,1fr); } }

@@ -1,0 +1,62 @@
+@implements IAsyncDisposable
+
+<section class="prompt-enhancement" aria-label="Prompt enhancement" @ref="_origin">
+    <TextAssistance Request="EnhancementPresentation" Preparing="_submitting" HasError="@(_pending is not null)" ReviewRequested="InspectEnhancement" CancelRequested="CancelRequest" @ref="_assist" ProjectId="Context.ProjectId" Studio="TextAssistantStudio.PromptEnhancement" Label="Improve prompt" Title="Improve prompt" Disabled="@(Blocked || string.IsNullOrWhiteSpace(Context.Prompt))" ModelLocked="@(Blocked || _busy)" SelectionChanged="ModelChanged">
+        <ChildContent><p class="field-hint">@Context.AssetName · @Context.Workflow.Label() · @(Context.IsEdit ? "Edit" : "Create")</p>    @if (Context.IsEdit)
+    {
+        <label class="inspection-toggle"><input type="checkbox" @bind="_inspect" disabled="@(Blocked || _busy)" /> Inspect reference images</label>
+        @if (_inspect)
+        {
+            <p class="field-hint">Sends @Context.References.Count image@(Context.References.Count == 1 ? "" : "s"), with their submitted crops, to @_model?.Model.Name through @_model?.Model.Backend.</p>
+            @if (VisionIssue is { } issue) { <p class="field-error" role="status">@issue</p> }
+        }
+    }
+@if (_inlineError is not null) { <p role="alert">@_inlineError</p> }</ChildContent>
+        <Actions><MudButton Class="enhance-button ai-assist-action" OnClick="Start" Disabled="@(!CanEnhance)" Variant="Variant.Filled" Color="Color.Primary"><AiAssistIcon />Enhance</MudButton></Actions>
+    </TextAssistance>
+    @if (_pending is not null) { <button @onclick="RetryEnqueue" disabled="@_submitting">Retry saving request</button> }
+    @if (_undoContext is not null)
+    { <button class="prompt-undo" type="button" @onclick="Undo" disabled="@(Blocked || _busy)">Undo enhancement</button> }
+    @if (_inlineError is not null) { <p class="field-error" role="alert">@_inlineError</p> }
+</section>
+
+<InlineDialog Visible="_open" VisibleChanged="VisibilityChanged" Options="Options" Class="prompt-enhancement-dialog" DefaultFocus="DefaultFocus.FirstChild" OnKeyDown="DialogKeyDown">
+    <TitleContent><h2>Enhance prompt</h2></TitleContent>
+    <DialogContent>
+        <lumibelle.Components.AI.AiResultAcknowledgement Observed="@(_observedResultJob is { } read && read.Id == _job?.Id ? new[] { read } : [])" />
+        <MudIconButton Class="review-close dialog-close" Icon="@Icons.Material.Outlined.Close" OnClick="Close" aria-label="Close prompt enhancement" />
+        @if (_request is { } request)
+        {
+            @if (_job is { } capturedJob) { <AiTextRequestDetails JobId="capturedJob.Id" /> }
+            <p class="enhancement-attribution">@request.Context.Workflow.Label() · @(request.Context.IsEdit ? "Edit" : "Create") · @request.Model.Backend · @request.Model.Name</p>
+            @if (_job is { } job)
+            { <lumibelle.Components.AI.AiJobProgressView Job="job" Queue="Jobs.View" Progress="Jobs.Progress(job.Id)" /> }
+            @if (_busy) { <p class="field-hint">You can close this preview or leave Assets. The request keeps running in AI activity.</p> }
+            <div class="enhancement-comparison@(ReplacesEdited ? " with-current" : "")">
+                <section><label for="enhancement-original">Original prompt</label><textarea id="enhancement-original" readonly rows="10" value="@request.Context.Prompt"></textarea></section>
+                @if (ReplacesEdited) { <section><label for="enhancement-current">Current prompt, replaced when applied</label><textarea id="enhancement-current" readonly rows="10" value="@Context.Prompt"></textarea></section> }
+                <section><label for="enhancement-suggestion">Suggested prompt</label><textarea id="enhancement-suggestion" rows="10" @bind="_suggestion" @bind:event="oninput"
+                    disabled="@(_busy || _result?.Kind != PromptEnhancementKind.Prompt)" placeholder="Your suggestion will appear here."></textarea></section>
+            </div>
+            @if (_result is { Kind: not PromptEnhancementKind.Prompt } result)
+            { <p role="status" class="enhancement-clarification"><strong>@(result.Kind == PromptEnhancementKind.NeedsInput ? "More detail needed: " : "Setup change needed: ")</strong>@result.Text Return to the prompt to make this change, then enhance again.</p> }
+            @if (Superseded is { } superseded) { <p class="field-hint" role="status">@superseded</p> }
+            @* Restoring the captured composer controls lets the suggestion apply to the setup it was written for. *@
+            @if (request.Context.Fingerprint() != Context.Fingerprint()) { <button @onclick="RestoreSetup" disabled="@(_busy || _applying || Blocked)">Load captured prompt setup</button> }
+            @if (_error is not null) { <p class="field-error" role="alert">@_error</p> }
+            @if (!string.IsNullOrEmpty(_raw))
+            { <details class="enhancement-response"><summary>Response details</summary><pre>@_raw</pre></details> }
+        }
+    </DialogContent>
+    <DialogActions>
+        @if (_request is not null && Superseded is null && Changed is { } changed) { <AssistedApplyWarning Changed="changed" Retry="enhance again" Consequence="Applying can be undone." /> }
+        @if (CanDiscard) { <MudButton OnClick="DiscardSuggestion">Discard</MudButton> }
+        <MudButton OnClick="ApplySuggestion" Disabled="@(!CanApply)" Color="Color.Primary" Variant="Variant.Filled">@(Changed is null ? "Apply changes" : AssistedApplyWarning.ApplyAnyway)</MudButton>
+        @if (!_busy && _error is not null && Changes.Count == 0 && _pending is null)
+        { <MudButton OnClick="Retry" Disabled="@Blocked" Variant="Variant.Outlined">Retry</MudButton> }
+        @if (_active is not null) { <MudButton OnClick="CancelRequest">Cancel enhancement</MudButton> }
+        <MudButton OnClick="Close">@(_result is { Kind: not PromptEnhancementKind.Prompt } ? "Back to prompt" : "Close")</MudButton>
+    </DialogActions>
+</InlineDialog>
+
+@* Request execution is application-owned; the code-behind only captures and reviews it. *@

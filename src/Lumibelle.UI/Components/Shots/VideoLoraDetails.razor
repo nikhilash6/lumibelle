@@ -1,0 +1,12 @@
+@if (Snapshot.AppliedLoras is { Count: > 0 } loras)
+{
+    <details class="video-lora-details">
+        <summary>Applied LoRAs · @loras.Count</summary>
+        <ol>@foreach (var lora in loras)
+        {
+            <li><strong>@lora.Reference.Name</strong> · strength @lora.Strength
+                <div>@lora.Reference.FileName</div><small>@lora.Reference.ComfyUrl</small></li>
+        }</ol>
+    </details>
+}
+@code { [Parameter, EditorRequired] public VideoSnapshot Snapshot { get; set; } = null!; }

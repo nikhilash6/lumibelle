@@ -1,0 +1,42 @@
+@inherits ProjectAwareComponent
+@inject IProjectStore Projects
+
+<PageTitle>Script · @(_project?.Name ?? "Lumibelle")</PageTitle>
+@if (_loading)
+{
+    <p role="status" class="loading-state">Opening your writing workspace…</p>
+}
+else if (_error is not null)
+{
+    <h1>Couldn’t open this project</h1>
+    <MudAlert Severity="Severity.Error">@_error</MudAlert>
+    <MudButton OnClick="LoadAsync">Try again</MudButton>
+}
+else if (_project is null)
+{
+    <h1>Project not found</h1>
+    <p>This project may have moved or is no longer in your library.</p>
+    <MudButton Href="/">Back to your projects</MudButton>
+}
+else
+{
+    <ScriptWorkspace Project="_project" RequestedJobId="JobId" @key="Id" />
+}
+@code {
+    [Parameter] public Guid Id { get; set; }
+    [Parameter] public Guid? JobId { get; set; }
+    private ProjectInfo? _project;
+    private string? _error;
+    private bool _loading = true;
+    private Guid? _loadedProject;
+    protected override Task OnParametersSetAsync() => _loadedProject == Id ? Task.CompletedTask : LoadAsync();
+    private async Task LoadAsync()
+    {
+        var requested = Id;
+        _loading = true;
+        _error = null;
+        try { var project = await Projects.GetAsync(requested); if (requested == Id) { _project = project; _loadedProject = requested; } }
+        catch (ProjectStoreException e) { if (requested == Id) _error = e.Message; }
+        finally { if (requested == Id) _loading = false; }
+    }
+}

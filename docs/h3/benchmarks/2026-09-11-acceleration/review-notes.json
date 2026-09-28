@@ -1,0 +1,14 @@
+[
+  {
+    "title": "Motion - user review, seed 20260911",
+    "text": "Larry, PDD and Standard look good. Spectrum and both existing Turbo profiles are poor, with weird interiors."
+  },
+  {
+    "title": "Dialogue - user review, seed 20260911",
+    "text": "Larry is OK. PDD is strongly distorted. Standard, Spectrum and both existing Turbo profiles are also OK."
+  },
+  {
+    "title": "Study complete after first round",
+    "text": "Stopped at the user's request. Larry is the strongest implementation candidate across both reviewed scenes. PDD remains promising for motion but has an observed dialogue failure. Second-seed, warm-process, Native and 243-frame follow-ups were not run."
+  }
+]

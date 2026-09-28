@@ -1,0 +1,25 @@
+<section class="shot-cast" aria-label="Cast">
+    <h2>Cast</h2>
+    @foreach (var character in ShotReferences.Characters(Shot))
+    {
+        <div class="shot-inline-fields" @key="character.Id"><label>Character name<input value="@character.Name" @onchange="e => Rename(character.Id, e.Value?.ToString() ?? string.Empty)" /></label><button disabled="@Shot.Dialogue.Any(d => string.Equals(d.Speaker, character.Name, StringComparison.OrdinalIgnoreCase))" @onclick="() => Remove(character.Id)">Remove</button></div>
+    }
+    <div class="shot-inline-fields"><label>Add silent character<input @bind="_name" @bind:event="oninput" /></label><button disabled="@string.IsNullOrWhiteSpace(_name)" @onclick="Add">Add character</button></div>
+    @if (_error is not null) { <p role="alert">@_error</p> }
+</section>
+@code {
+    [Parameter, EditorRequired] public Shot Shot { get; set; } = default!;
+    [Parameter] public EventCallback<List<ShotCharacter>> Changed { get; set; }
+    private string _name = ""; private string? _error;
+    private async Task Add() {
+        var name = _name.Trim(); var list = ShotReferences.Characters(Shot).ToList();
+        if (name.Length == 0 || list.Any(c => string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase))) { _error = "Use a distinct character name."; return; }
+        list.Add(new(Guid.NewGuid(), name)); await Changed.InvokeAsync(list); _name = ""; _error = null;
+    }
+    private Task Remove(Guid id) => Changed.InvokeAsync(ShotReferences.Characters(Shot).Where(c => c.Id != id).ToList());
+    private async Task Rename(Guid id, string name) {
+        name = name.Trim(); var list = ShotReferences.Characters(Shot).ToList();
+        if (name.Length == 0 || list.Any(c => c.Id != id && string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase))) { _error = "Use a distinct character name."; return; }
+        await Changed.InvokeAsync(list.Select(c => c.Id == id ? c with { Name = name } : c).ToList()); _error = null;
+    }
+}

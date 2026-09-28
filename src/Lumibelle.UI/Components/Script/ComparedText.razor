@@ -1,0 +1,5 @@
+@if (Span.Bold && Span.Italic) { <strong><em>@Span.Text</em></strong> }
+else if (Span.Bold) { <strong>@Span.Text</strong> }
+else if (Span.Italic) { <em>@Span.Text</em> }
+else { @Span.Text }
+@code { [Parameter, EditorRequired] public ComparedSpan Span { get; set; } = null!; }

@@ -1,0 +1,144 @@
+@inject IAiJobStore Store
+@inject TimeProvider Clock
+@inject ILogger<AiJobProgressView> Logger
+@implements IAsyncDisposable
+
+@if (VideoCandidates is { Count: > 1 } candidates)
+{
+    <p class="ai-batch-summary" role="status">@candidates.Count(c => c.State == VideoCandidateState.Complete) / @candidates.Count takes saved</p>
+}
+
+@if (Job.ComfyControl?.PauseRequested == true && Job.State != AiJobState.Waiting)
+{
+    <p class="field-hint" role="status">Stopping the owned ComfyUI workflow for pause. This request is retained, not cancelled. Saved takes stay available.</p>
+}
+else if (Job.State == AiJobState.Waiting)
+{
+    <div class="ai-queue-wait" role="status" aria-live="polite">
+        <strong>Queued in Lumibelle · position @Position</strong>
+        <span>@WaitingMessage</span><small aria-hidden="true">@ProgressTiming.ForJob(Job, null, Clock.GetUtcNow())</small>
+    </div>
+}
+else if ((Progress ?? _checkpoint) is { } progress && Job.State == AiJobState.Running)
+{
+    <GenerationProgressView Progress="Display(progress.Progress, progress)" HideActivityLabel="@(progress.CodexTiming is not null)" />
+    @if (progress.CodexTiming is { } timing) { <CodexImageTimingView @key="Job.Id" Timing="timing" /> }
+    @if (progress.Notice is not null) { <p class="field-hint">@progress.Notice</p> }
+    @if (Progress is null) { <p class="field-hint">Saved progress · waiting for live updates.</p> }
+}
+else if (Job.State == AiJobState.Running)
+{
+    <GenerationProgressView Progress="@(Display(new(GenerationPhase.Preparing, Job.CancelRequested ? "Stopping the owned request…" : "Preparing request…")))" />
+}
+else if (Job.RemoteUnconfirmed)
+{
+    <p class="field-hint" role="status">@(Job.CancelRequested ? "Cancelled locally. " : "")ComfyUI is reserved until the remote job is confirmed.</p>
+}
+@if (Job.State == AiJobState.Running && Job.Batch?.Candidates.Any(c => c.AppendCommandId is not null) == true &&
+    Queue.Jobs.Any(j => j.Backend == Job.Backend && j.State == AiJobState.Waiting && !j.CancelRequested))
+{
+    <p class="field-hint" role="status">Extra takes stay with this batch. Waiting requests will start afterward.</p>
+}
+
+@if (AiQueueOrder.IsWaiting(Job))
+{
+    <AiJobPriorityAction @key="Job.Id" Job="Job" Changed="PriorityChanged" />
+}
+
+@if (Job.Backend == AiBackend.ComfyUI && lumibelle.Services.AI.ComfyQueuePolicy.CanRetry(Job))
+{
+    <ComfyRetryAction @key="Job.Id" Job="Job" Paused="@Queue.Paused.Contains(AiBackend.ComfyUI)" />
+}
+
+@code {
+    [Parameter, EditorRequired] public AiJobHeader Job { get; set; } = null!;
+    [Parameter, EditorRequired] public AiQueueDocument Queue { get; set; } = null!;
+    [Parameter] public AiJobProgress? Progress { get; set; }
+    [Parameter] public IReadOnlyList<VideoCandidate>? VideoCandidates { get; set; }
+    [Parameter] public EventCallback<Guid> PriorityChanged { get; set; }
+    private AiJobProgress? _checkpoint;
+    private (Guid Id, Guid? Lease)? _loaded;
+    private PeriodicTimer? _timer;
+    private Task? _ticks;
+    private bool _disposed;
+    private GenerationProgress Display(GenerationProgress progress, AiJobProgress? reported = null)
+    {
+        var label = progress.Label;
+        var scope = progress.EstimateScope;
+        if (reported?.Candidate is { } number)
+        {
+            var prefix = $"Take {number} ";
+            if (label.StartsWith(prefix, StringComparison.Ordinal))
+            {
+                label = label[prefix.Length..].TrimStart(' ', '·');
+                if (label.Length > 0) label = char.ToUpperInvariant(label[0]) + label[1..];
+            }
+            // Takes can run out of order and branches of one workflow can interleave during
+            // decoding and transfer. Keep overall progress moving forward instead of
+            // exposing candidate numbers or workflow-internal stage names.
+            var position = reported.CandidateExecutionOrder?.Count;
+            var total = Job.Batch?.Candidates.Count ?? reported.CandidateCount;
+            if (position is > 0 && total is > 1)
+                label = $"{position}/{total} · {label}";
+            var stagePrefix = $"take_{number}_";
+            if (scope?.StartsWith(stagePrefix, StringComparison.Ordinal) == true) scope = scope[stagePrefix.Length..];
+        }
+        return progress with {
+            Label = label, EstimateScope = scope,
+            Elapsed = Job.StartedUtc is { } started ? TimeSpan.FromSeconds(Math.Max(0, (Clock.GetUtcNow() - started).TotalSeconds)) : progress.Elapsed,
+            EstimatedRemaining = Progress is null ? null : progress.EstimatedRemaining
+        };
+    }
+    protected override Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_timer is null && Job.State is (AiJobState.Running or AiJobState.Waiting) && !_disposed)
+        {
+            _timer = new(TimeSpan.FromSeconds(1), Clock);
+            _ticks = TickAsync(_timer);
+        }
+        return Task.CompletedTask;
+    }
+    private async Task TickAsync(PeriodicTimer timer)
+    {
+        while (await timer.WaitForNextTickAsync())
+            await InvokeAsync(() => { if (!_disposed && Job.State is (AiJobState.Running or AiJobState.Waiting)) StateHasChanged(); });
+    }
+    protected override async Task OnParametersSetAsync()
+    {
+        if (Job.State is not (AiJobState.Running or AiJobState.Waiting)) { _timer?.Dispose(); _timer = null; }
+        if (_loaded?.Id != Job.Id) _checkpoint = null;
+        if (Progress is null && Job.State == AiJobState.Running && _loaded != (Job.Id, Job.LeaseId)) await LoadCheckpointAsync();
+    }
+    public async ValueTask DisposeAsync()
+    {
+        _disposed = true; _timer?.Dispose();
+        if (_ticks is not null) await _ticks;
+    }
+    private async Task LoadCheckpointAsync()
+    {
+        var identity = (Job.Id, Job.LeaseId); _loaded = identity;
+        try
+        {
+            var saved = await Store.ReadArtifactAsync<AiJobProgress>(identity.Id, AiJobArtifact.Progress);
+            if (_loaded != identity) return;
+            _checkpoint = saved;
+        }
+        // Progress is display-only: keep the last checkpoint and show the running state.
+        catch (WorkspaceStoreException e) { Logger.LogWarning(e, "Kept the last progress for AI job {Job}", identity.Id); }
+    }
+    private AiJobHeader[] Waiting => AiQueueOrder.Waiting(Queue.Jobs, Job.Backend);
+    private int Position => Math.Max(1, Array.FindIndex(Waiting, j => j.Id == Job.Id) + 1);
+    private string WaitingMessage
+    {
+        get
+        {
+            if (Queue.Paused.Contains(Job.Backend)) return Job.ComfyControl is not null
+                ? "Paused and retained. Unfinished work restarts when the queue resumes; saved takes are kept."
+                : "This provider queue is paused.";
+            if (Queue.Jobs.FirstOrDefault(j => j.Backend == Job.Backend && j.RemoteUnconfirmed) is { } unknown) return "Waiting for remote confirmation · " + unknown.TargetName;
+            if (Position > 1) return "After " + Waiting[Position - 2].TargetName;
+            if (Queue.Jobs.FirstOrDefault(j => j.Backend == Job.Backend && j.State == AiJobState.Running) is { } running) return "After " + running.TargetName;
+            return "Ready for the next available provider slot.";
+        }
+    }
+}

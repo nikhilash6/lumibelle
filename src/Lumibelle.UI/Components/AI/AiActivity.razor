@@ -1,0 +1,290 @@
+@inherits ProjectAwareComponent
+@inject AiJobCoordinator Jobs
+@inject IAiJobStore Store
+@inject NavigationManager Navigation
+@inject IServiceProvider Services
+@implements IDisposable
+
+<div class="ai-activity-shell">
+<button class="ai-activity-trigger" @onclick="Open" @ref="_trigger" aria-controls="ai-activity-panel" aria-expanded="@_open.ToString().ToLowerInvariant()">
+    <AiAssistIcon />
+    <span>AI activity</span>
+    @if (ActiveCount > 0) { <span class="ai-activity-count">@ActiveCount active</span> }
+    @if (BlockedCount > 0) { <span class="ai-activity-count">@BlockedCount blocked</span> }
+    @if (AttentionCount > 0) { <span class="ai-activity-unread" data-ai-attention-count="@AttentionCount">@AttentionLabel</span> }
+    <span class="visually-hidden">@RunningCount running, @WaitingCount waiting, @AttentionLabel</span>
+</button>
+@if (_open)
+{
+<MudDrawer Open="_open" OpenChanged="SetOpen" Variant="DrawerVariant.Temporary" Breakpoint="Breakpoint.None" Anchor="Anchor.End" Elevation="8" Width="min(32rem, 100vw)" Class="ai-activity-drawer">
+    @if (_open)
+    {
+        <MudFocusTrap DefaultFocus="DefaultFocus.FirstChild">
+        <section id="ai-activity-panel" class="ai-activity-panel" role="dialog" aria-modal="true" aria-label="AI activity" aria-labelledby="ai-activity-title" @onkeydown="KeyDown">
+            <header class="ai-activity-header">
+                <div><h2 id="ai-activity-title">AI activity</h2><p>
+                    <span>@RunningCount running · @WaitingCount waiting</span>
+                    @if (BlockedCount > 0) { <span> · @BlockedCount blocked</span> }
+                    <span> · @AttentionLabel</span>
+                </p></div><button @onclick="Close" aria-label="Close AI activity">×</button>
+            </header>
+            <div class="ai-provider-controls">
+                @foreach (var provider in new[] { AiBackend.ComfyUI, AiBackend.OpenRouter, AiBackend.Codex, AiBackend.ClaudeCode })
+                {
+                    var paused = Jobs.View.Paused.Contains(provider);
+                    var expanded = _expandedProviders.Contains(provider);
+                    <section class="ai-provider-control" aria-label="@(TextModelPolicy.ProviderName(provider) + " queue")">
+                        <div class="ai-provider-row">
+                            <button class="ai-provider-toggle" aria-expanded="@expanded.ToString().ToLowerInvariant()" aria-controls="@("activity-capacity-" + provider)" @onclick="() => ToggleProvider(provider)"><span aria-hidden="true">@(expanded ? "▾" : "▸")</span> <strong>@TextModelPolicy.ProviderName(provider)</strong><span class="ai-provider-summary">@(paused ? "Paused" : provider == AiBackend.ComfyUI ? "VRAM" : provider == AiBackend.ClaudeCode ? "Limits" : "Allowance")</span></button>
+                            @if (provider == AiBackend.ComfyUI) { <ComfyPauseControl Jobs="Jobs" /> }
+                            else { <button disabled="@_changingProvider" aria-label="@((paused ? "Resume queue " : "Pause queue ") + TextModelPolicy.ProviderName(provider))" @onclick="() => Pause(provider, !paused)">@(paused ? "Resume" : "Pause queue")</button> }
+                        </div>
+                        @if (expanded)
+                        {
+                            <div class="ai-provider-details" id="@("activity-capacity-" + provider)">
+                                @if (provider == AiBackend.Codex)
+                                {
+                                    @if (_codexSettings is { Enabled: true }) { <CodexUsage Settings="_codexSettings" RefreshOnOpen="true" ObserveVisibility="true" /> }
+                                    else { <p class="field-hint">Enable Codex in Connections to see its allowance.</p> }
+                                }
+                                else if (provider == AiBackend.ClaudeCode)
+                                { <p class="field-hint">Claude Code does not report remaining usage to other apps. If a usage or rate limit ends a request, this queue pauses; resume it when the limit resets.</p> }
+                                else { <ProviderCapacity Backend="provider" /> }
+                            </div>
+                        }
+                    </section>
+                }
+            </div>
+            <div class="ai-activity-filters">
+                <div class="ai-activity-tabs" role="tablist" aria-label="AI activity views">
+                    @foreach (var view in Views)
+                    { <button role="tab" aria-selected="@((_view == view).ToString().ToLowerInvariant())" tabindex="@(_view == view ? 0 : -1)" @ref="_tabs[Array.IndexOf(Views, view)]" @onkeydown="e => TabKey(view, e)" @onclick="() => ChangeView(view)">@view</button> }
+                </div>
+                <div class="ai-project-filter"><label for="ai-activity-project">Project</label><select id="ai-activity-project" value="@_project" @onchange="ProjectChanged"><option value="">All projects</option>@foreach (var project in Projects) { <option value="@project.Id">@project.Name</option> }</select></div>
+            </div>
+            <div class="ai-activity-tools">
+                <button disabled="@(_bulkBusy || !ReadableActivity.Any())" @onclick="MarkAllRead">@(_view == "Needs attention" ? "Acknowledge alerts" : "Mark all read")</button>
+                @if (_view == "History")
+                {
+                    <button disabled="@(_bulkBusy || !Scoped.Any(j => j.CanClearActivity && j.ActivityClearedUtc is null))" @onclick="ClearHistory">Clear history</button>
+                    <label><input type="checkbox" @bind="_showCleared" @bind:after="ResetPage" /> Show cleared</label>
+                }
+                <span class="field-hint">@(_project.Length == 0 ? "Across all projects" : "Selected project")</span>
+            </div>
+            @if (_view == "Needs attention")
+            { <p class="field-hint">Unseen errors and unconfirmed remote requests. Successful results stay in their studios and History. Acknowledged errors remain in History; unconfirmed work stays here until its status is resolved.</p> }
+            @if (_notice is not null) { <div class="ai-activity-notice" role="status">@_notice @if (_undoCleared.Count > 0) { <button disabled="@_bulkBusy" @onclick="UndoClear">Undo</button> }</div> }
+            @if ((_error ?? Jobs.Error) is { } error) { <p class="field-error" role="alert">@error</p> }
+            <div class="ai-activity-list" role="region" aria-label="@(_view + " AI requests")" tabindex="0" @ref="_list">
+                @if (!Filtered.Any()) { <p class="ai-activity-empty">@EmptyMessage</p> }
+                @foreach (var job in Paged)
+                {
+                    var pending = _pending.Contains(job.Id); var active = job.State is AiJobState.Waiting or AiJobState.Running;
+                    <article class="ai-activity-job" @key="job.Id" data-job-id="@job.Id" aria-label="@job.TargetName">
+                        <div class="ai-job-heading"><h3>@job.TargetName</h3><span class="ai-job-state">@(job.Priority ? "Priority · " : "")@StateLabel(job)</span></div>
+                        @if (job.ActivityClearedUtc is not null) { <span class="ai-job-cleared">Cleared from activity</span> }
+                        <p class="ai-job-context">@(job.Target.ProjectId is null ? "AI settings" : job.ProjectName) · @TextModelPolicy.ProviderName(job.Backend)</p>
+                        <AiJobProgressView Job="job" Queue="Jobs.View" Progress="Jobs.Progress(job.Id)" PriorityChanged="PriorityChanged" />
+                        @if (job.Backend == AiBackend.OpenRouter) { <OpenRouterJobUsage Job="job" /> }
+                        @if (job.Error is not null) { <p class="field-error">@job.Error</p> }
+                        <div class="ai-job-actions">
+                            <a href="@ProjectLink(job.ReviewUrl)" @onclick="() => Review(job)" @onclick:preventDefault>@(active ? "View" : "Review")</a>
+                            @if ((active || job.RemoteUnconfirmed || job.ComfyControl is not null) && !job.CancelRequested) { <button disabled="@pending" @onclick="() => Act(job.Id, () => Jobs.CancelAsync(job.Id))">Cancel</button> }
+                            @if ((job.Recovery is AiJobRecovery.CheckStatus or AiJobRecovery.RetryOutput || job.CanRecoverCancelledOutputs) && !active)
+                            { <button disabled="@pending" @onclick="() => Act(job.Id, () => Jobs.ResumeAsync(job.Id))">@(job.CanRecoverCancelledOutputs ? "Recover completed takes" : job.Recovery == AiJobRecovery.RetryOutput ? "Retry download/save" : "Check status")</button> }
+                            @if (job.Unread) { <button disabled="@pending" @onclick="() => Act(job.Id, async () => { await Jobs.ChangeActivityAsync([job], AiActivityChange.Read); })">Mark read</button> }
+                            @if (job.ActivityClearedUtc is not null) { <button disabled="@pending" @onclick="() => Act(job.Id, async () => { await Jobs.ChangeActivityAsync([job], AiActivityChange.Restore); })">Restore to activity</button> }
+                            @if (IsText(job) || job.Backend == AiBackend.Codex && job.Batch is not null) { <button disabled="@pending" @onclick="() => Inspect(job.Id)" aria-expanded="@((_inspect == job.Id).ToString().ToLowerInvariant())">@(_inspect == job.Id ? "Hide response" : "Inspect response")</button> }
+                        </div>
+                        @if (AiQueueOrder.IsWaiting(job))
+                        {
+                            <div class="ai-job-order" aria-label="Queue order">
+                                <button disabled="@(pending || First(job))" @onclick="() => Act(job.Id, () => Jobs.MoveAsync(job.Id, -1))" aria-label="Move request up" title="Move within this priority group">↑</button>
+                                <button disabled="@(pending || Last(job))" @onclick="() => Act(job.Id, () => Jobs.MoveAsync(job.Id, 1))" aria-label="Move request down" title="Move within this priority group">↓</button>
+                                <button disabled="@(pending || job.Priority && AiQueueOrder.IsNext(Jobs.View.Jobs, job))" @onclick="() => Act(job.Id, async () => { await Jobs.MoveAsync(job.Id, 0, first: true); PriorityChanged(job.Id); })" title="Mark priority and move first on this provider. Does not interrupt running work.">Run next</button>
+                            </div>
+                        }
+                        @if (_inspect == job.Id)
+                        {
+                            <div class="ai-job-response"><AiResultAcknowledgement Observed="@(_inspectedJob is { } read ? new[] { read } : [])" /><p class="field-hint">Saved response · @job.TargetName. Applying is available in its studio after checking the original target.</p>
+                                <pre tabindex="0">@(_response?.Raw ?? "No response has been saved yet.")</pre>
+                                @if (_response?.Error is not null) { <p class="field-error">@_response.Error</p> }
+                                @if (Services.GetService(typeof(IAiTextRepairService)) is IAiTextRepairService)
+                                { <AiTextRepairAction @key="job.Id" JobId="job.Id" ReviewRequested="Review" /> }
+                            </div>
+                        }
+                    </article>
+                }
+            </div>
+            @if (PageCount > 1)
+            { <footer class="ai-activity-pagination"><button @onclick="Previous" disabled="@(_page == 0)">Previous</button><span>Page @(_page + 1) of @PageCount</span><button @onclick="Next" disabled="@(_page + 1 >= PageCount)">Next</button></footer> }
+        </section>
+        </MudFocusTrap>
+    }
+</MudDrawer>
+}
+</div>
+
+@code {
+    private static readonly string[] Views = ["Active", "Needs attention", "History"];
+    private bool _open, _disposed, _changingProvider, _restoreFocus, _focusList; private string _view = "Active", _project = ""; private int _page;
+    private readonly HashSet<Guid> _pending = []; private Guid? _inspect; private AiTextJobResult? _response; private string? _error;
+    private ElementReference _trigger, _list;
+    private readonly ElementReference[] _tabs = new ElementReference[3];
+    private int RunningCount => Jobs.View.Jobs.Count(j => j.State == AiJobState.Running);
+    private int WaitingCount => Jobs.View.Jobs.Count(j => j.State == AiJobState.Waiting);
+    private int ActiveCount => RunningCount + WaitingCount;
+    private int BlockedCount => Jobs.View.Jobs.Count(j => j.RemoteUnconfirmed && j.State is not (AiJobState.Waiting or AiJobState.Running));
+    private int AttentionCount => Jobs.View.Jobs.Count(AiActivityPolicy.NeedsAttention);
+    private string AttentionLabel => $"{AttentionCount} {(AttentionCount == 1 ? "needs" : "need")} attention";
+    private IEnumerable<AiJobHeader> Scoped => AiQueueOrder.ForDisplay(Jobs.View.Jobs).Where(j => _project.Length == 0 || j.Target.ProjectId?.ToString() == _project);
+    private IEnumerable<(Guid Id, string Name)> Projects => Jobs.View.Jobs.Where(j => j.Target.ProjectId is not null)
+        .GroupBy(j => j.Target.ProjectId!.Value).Select(g => (g.Key, g.MaxBy(j => j.CreatedUtc)!.ProjectName)).OrderBy(p => p.Item2, StringComparer.OrdinalIgnoreCase);
+    private IEnumerable<AiJobHeader> Filtered
+    {
+        get
+        {
+            var jobs = Scoped.Where(j => j.ActivityClearedUtc is null || !j.CanClearActivity || _view == "History" && _showCleared).Where(j => j.Id == _inspect || (_view switch
+            { "Active" => j.State is AiJobState.Waiting or AiJobState.Running || j.RemoteUnconfirmed || j.ComfyControl is not null, "Needs attention" => AiActivityPolicy.NeedsAttention(j), _ => j.State is not (AiJobState.Waiting or AiJobState.Running) }));
+            return _view == "Active" ? jobs : jobs.OrderByDescending(j => j.FinishedUtc ?? j.CreatedUtc);
+        }
+    }
+    private int PageCount => Math.Max(1, (Filtered.Count() + 19) / 20);
+    private IEnumerable<AiJobHeader> Paged => Filtered.Skip(Math.Min(_page, PageCount - 1) * 20).Take(20);
+    private string EmptyMessage => _view switch { "Active" => "No requests are queued or running.", "Needs attention" => "No unseen errors or unconfirmed requests. Successful results are in their studios and History.", _ => "Completed requests will appear here." };
+    private static string StateLabel(AiJobHeader job) => job.CancelRequested ? "Cancelled" :
+        job.ComfyControl?.PauseRequested == true ? job.RemoteUnconfirmed || job.State == AiJobState.Running ? "Stopping for pause" : "Retained for resume" :
+        job.ComfyControl is not null && job.State == AiJobState.NeedsAttention ? "Waiting to reconnect" : job.State switch { AiJobState.NeedsAttention => "Needs attention", AiJobState.Waiting => "Queued", AiJobState.Running => "Working", _ => job.State.ToString() };
+    private bool First(AiJobHeader job) => AiQueueOrder.Band(Jobs.View.Jobs, job).FirstOrDefault()?.Id == job.Id;
+    private bool Last(AiJobHeader job) => AiQueueOrder.Band(Jobs.View.Jobs, job).LastOrDefault()?.Id == job.Id;
+    private void PriorityChanged(Guid id)
+    {
+        // A promotion can move a request to another page. Follow it and restore
+        // keyboard focus to the list rather than losing focus with the old row.
+        var index = Filtered.Select(j => j.Id).ToList().IndexOf(id);
+        if (index >= 0) _page = index / 20;
+        _focusList = _open;
+        StateHasChanged();
+    }
+    private static bool IsText(AiJobHeader job) => job.Kind is AiJobKind.ShotTranslation or AiJobKind.AssetPicking or AiJobKind.ContentProbe or AiJobKind.ReelComposition or AiJobKind.ScriptAssistant or AiJobKind.AssetExtraction or AiJobKind.ShotPlanning or AiJobKind.PromptComposition or AiJobKind.PromptEnhancement or AiJobKind.Guidance or AiJobKind.TextBenchmark or AiJobKind.TextAdvancedTest;
+    protected override async Task OnInitializedAsync() { Jobs.Changed += Changed; try { await Jobs.RefreshAsync(); } catch (WorkspaceStoreException e) { _error = e.Message; } }
+    private void Changed()
+    {
+        if (!_disposed) _ = InvokeAsync(async () =>
+        {
+            if (_inspect is { } id && Jobs.View.Jobs.FirstOrDefault(j => j.Id == id) is { } current && current.Version != _inspectedJob?.Version)
+                await LoadInspection(id);
+            if (!_disposed) StateHasChanged();
+        });
+    }
+    private CodexSettings? _codexSettings;
+    private async Task Open()
+    {
+        _open = true;
+        try { if (Services.GetService<IAiSettingsStore>() is { } settings) _codexSettings = (await settings.LoadAsync()).Codex; }
+        catch (WorkspaceStoreException e) { _error = e.Message; }
+    }
+    private Task Close() { _inspectionVersion++; _open = false; _restoreFocus = true; return Task.CompletedTask; }
+    private Task SetOpen(bool open) { if (open) return Open(); return Close(); }
+    private Task KeyDown(KeyboardEventArgs e) => e.Key == "Escape" ? Close() : Task.CompletedTask;
+    private void ChangeView(string view) { _view = view; _page = 0; CollapseInspection(); }
+    private async Task TabKey(string view, KeyboardEventArgs e)
+    {
+        var index = Array.IndexOf(Views, view);
+        var next = e.Key switch { "ArrowRight" => (index + 1) % Views.Length, "ArrowLeft" => (index + Views.Length - 1) % Views.Length, "Home" => 0, "End" => Views.Length - 1, _ => -1 };
+        if (next < 0) return; ChangeView(Views[next]); await _tabs[next].FocusAsync();
+    }
+    private void ProjectChanged(ChangeEventArgs e) { _project = e.Value?.ToString() ?? ""; ResetPage(); CollapseInspection(); }
+    private void Previous() => _page = Math.Max(0, _page - 1);
+    private void Next() => _page = Math.Min(PageCount - 1, _page + 1);
+    private async Task Pause(AiBackend provider, bool paused)
+    { _changingProvider = true; try { await Jobs.SetPausedAsync(provider, paused); _error = null; } catch (Exception e) when (e is WorkspaceStoreException or AiGenerationException) { _error = e.Message; } finally { _changingProvider = false; } }
+    private async Task Act(Guid id, Func<Task> action)
+    {
+        if (!_pending.Add(id)) return;
+        try { await action(); _error = null; }
+        catch (Exception e) when (e is WorkspaceStoreException or AiGenerationException) { _error = e.Message; }
+        finally { _pending.Remove(id); _page = Math.Min(_page, PageCount - 1); _focusList = _open && !Filtered.Any(j => j.Id == id); }
+    }
+    private Task Inspect(Guid id)
+    {
+        if (_inspect == id) { CollapseInspection(); return Task.CompletedTask; }
+        return LoadInspection(id);
+    }
+    private long _inspectionVersion;
+    private void CollapseInspection() { _inspectionVersion++; _inspect = null; _inspectedJob = null; _response = null; }
+    private async Task LoadInspection(Guid id)
+    {
+        var version = ++_inspectionVersion;
+        try
+        {
+            var job = Jobs.View.Jobs.Single(j => j.Id == id);
+            AiTextJobResult? response;
+            if (job.Backend == AiBackend.Codex && job.Batch is { } batch)
+            {
+                var responses = new List<string>();
+                foreach (var candidate in batch.Candidates)
+                {
+                    var output = await Store.ReadOperationAsync<CodexImageOutput>(id, "candidate/" + candidate.Id.ToString("D"), AiOperationArtifact.Output);
+                    if (output is not null) responses.Add($"Take {candidate.Number}: {output.Text}");
+                }
+                var partial = (await Store.ReadArtifactAsync<AiImageJobResult>(id, AiJobArtifact.Result))?.Raw;
+                if (!string.IsNullOrWhiteSpace(partial)) responses.Add("Latest response:\n" + partial);
+                response = new(responses.Count > 0 ? string.Join("\n\n", responses) : "No response saved yet.");
+            }
+            else if (job.Kind is AiJobKind.TextBenchmark or AiJobKind.TextAdvancedTest)
+            {
+                var result = await Store.ReadArtifactAsync<AiModelTestJobResult>(id, AiJobArtifact.Result);
+                response = result is null ? null : new(result.Response ?? "", Error: result.Error);
+            }
+            else if (job.Kind == AiJobKind.ContentProbe)
+            {
+                var result = await Store.ReadArtifactAsync<ContentProbeResult>(id, AiJobArtifact.Result);
+                response = result is null ? null : new(string.IsNullOrWhiteSpace(result.Raw) ? result.ApiRefusal : result.Raw, result.Complete, result.FinishReason);
+            }
+            else response = await Store.ReadArtifactAsync<AiTextJobResult>(id, AiJobArtifact.Result);
+            if (_disposed || version != _inspectionVersion) return;
+            _response = response; _inspect = id; _inspectedJob = job; _error = null;
+        }
+        catch (WorkspaceStoreException e) { _error = e.Message; }
+    }
+    private readonly HashSet<AiBackend> _expandedProviders = [];
+    private AiJobHeader? _inspectedJob;
+    private bool _bulkBusy, _showCleared;
+    private string? _notice;
+    private IReadOnlyList<AiJobHeader> _undoCleared = [];
+    private void ToggleProvider(AiBackend backend) { if (!_expandedProviders.Add(backend)) _expandedProviders.Remove(backend); }
+    private void ResetPage() => _page = 0;
+    // On the attention tab, acknowledge only alerts in the selected project scope,
+    // across pages. Do not consume successful results waiting for studio review.
+    private IEnumerable<AiJobHeader> ReadableActivity => Scoped.Where(j => j.Unread && j.ActivityClearedUtc is null &&
+        (_view != "Needs attention" || AiActivityPolicy.NeedsAttention(j)));
+    private Task MarkAllRead() => Bulk(ReadableActivity.ToArray(), AiActivityChange.Read);
+    private Task ClearHistory() => Bulk(Scoped.Where(j => j.CanClearActivity && j.ActivityClearedUtc is null).ToArray(), AiActivityChange.Clear);
+    private Task UndoClear() => Bulk(_undoCleared, AiActivityChange.Restore);
+    private async Task Bulk(IReadOnlyList<AiJobHeader> observed, AiActivityChange change)
+    {
+        if (_bulkBusy) return;
+        _bulkBusy = true;
+        try
+        {
+            var changed = await Jobs.ChangeActivityAsync(observed, change);
+            if (change == AiActivityChange.Clear) { _undoCleared = changed; CollapseInspection(); }
+            if (change == AiActivityChange.Restore) _undoCleared = [];
+            _notice = change switch { AiActivityChange.Clear => $"{changed.Count} requests cleared. Saved work is retained.", AiActivityChange.Restore => $"{changed.Count} requests restored.", _ => $"{changed.Count} requests marked read." };
+            _error = null; _page = Math.Min(_page, PageCount - 1);
+        }
+        catch (WorkspaceStoreException e) { _error = e.Message; }
+        finally { _bulkBusy = false; }
+    }
+    private string? _reviewNavigation;
+    private void Review(AiJobHeader job) { _open = false; _reviewNavigation = job.ReviewUrl; }
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // Commit the closed drawer before the destination tries to reserve its review dialog.
+        if (_reviewNavigation is { } url && !_open) { _reviewNavigation = null; Navigation.NavigateTo(ProjectLink(url)); return; }
+        if (_restoreFocus && !_open) { _restoreFocus = false; await _trigger.FocusAsync(); }
+        if (_focusList && _open) { _focusList = false; await _list.FocusAsync(preventScroll: true); }
+    }
+    public void Dispose() { _disposed = true; Jobs.Changed -= Changed; }
+}

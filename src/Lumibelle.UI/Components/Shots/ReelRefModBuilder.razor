@@ -1,0 +1,146 @@
+@inherits lumibelle.Components.ProjectAwareComponent
+@implements IAsyncDisposable
+@using System.Text.Json
+@using lumibelle.Models
+@using lumibelle.Services.AI
+@using lumibelle.Services.Production
+@inject AiRefModCapture Capture
+@inject AiJobCoordinator Jobs
+@inject IAiJobStore JobStore
+@inject IAiReviewGate Reviews
+
+<section class="refmod-builder" aria-label="Selected-keyframe RefMod">
+    <strong>Selected-keyframe RefMod · Experimental</strong>
+    <p>@ReelRefMods.Summary(Binding)</p>
+    <p class="field-hint">The accepted fitted images and recipe are stored in the project. The server RefMod is a disposable cache: generation rebuilds it automatically when missing or when using another server. Do not edit a cached file in place; same-shape replacements cannot be detected without content hashing.</p>
+    @if (Binding.RefMod is { } saved) { <small>Last attached cache: @saved.ComfyUrl · @saved.FileName<text>.safetensors</text></small> }
+    <p class="field-hint">Full visual reference at normal strength. Each selected angle still contributes reference tokens. Voice remains a separate Audio input.</p>
+    <label>RefMod canvas<select aria-label="RefMod canvas" value="@_canvas" @onchange="ChangeCanvas" disabled="@(Disabled || _busy || Active is not null)">
+        @for (var i = 0; i < ReelRefMods.Canvases.Count; i++) { var size = ReelRefMods.Canvases[i]; <option value="@i">@size.Width × @size.Height</option> }
+    </select></label>
+    <p class="field-hint">Your crops are fitted and padded to this canvas without an extra cover crop. Review these exact prepared images before building. This does not encode the entire reel.</p>
+    <button type="button" @onclick="() => Prepare()" disabled="@(Disabled || _busy || Active is not null || Binding.Keyframes?.Frames.Count is not (>= 2 and <= 9))">@(_busy ? "Preparing…" : "Prepare previews")</button>
+    @if ((_prepared is not null || Binding.RefMod is not null) && Active is null) {
+        <button type="button" @onclick="() => Prepare(false)" disabled="@(Disabled || _busy)">Prepare a new build</button>
+        <p class="field-hint">Creates fresh previews for an explicit new build with a new server filename. The existing RefMod is not overwritten.</p>
+    }
+    @if (_prepared is not null) {
+        <div class="refmod-previews">@for (var i = 0; i < _prepared.Previews.Count; i++) {
+            <figure><img src="@($"data:image/png;base64,{Convert.ToBase64String(_prepared.Previews[i])}")" alt="Prepared RefMod angle @(i + 1)" /><figcaption>Angle @(i + 1)</figcaption></figure>
+        }</div>
+        <p class="field-hint">Build server: @PreparedRequest.ComfyUrl</p>
+        <p>@PreparedRecipe.LatentFrames frames · @PreparedRecipe.Tokens.ToString("N0") visual reference tokens · VAE: @PreparedRecipe.VaeName</p>
+        @if (!PreparedMatches) { <p role="status">Frame order, crops or canvas changed. Prepare new previews; the existing build is not silently replaced.</p> }
+        else if (_built is not null) {
+            <button type="button" @onclick="UseBuilt" disabled="@(Disabled || _busy)">Use built RefMod</button>
+            <p class="field-hint">This attaches the accepted images and recipe with a cache hint to this pending reference. Apply changes, then review the new Video label. Later cache rebuilds do not change the prompt or labels.</p>
+        } else if (ObservedJob is null) {
+            <button type="button" @onclick="Build" disabled="@(Disabled || _busy || Active is not null)">Build Full visual RefMod</button>
+            <p class="field-hint">Runs once through the ComfyUI queue. Reusing the saved server file does not run its creator again.</p>
+        }
+    }
+    @if (ObservedJob is { } job) {
+        <p role="status">@job.State · @job.TargetName</p>
+        <AiJobProgressView Job="job" Queue="Jobs.View" Progress="Jobs.Progress(job.Id)" />
+        <a href="@ProjectLink(job.ReviewUrl)" target="_blank" rel="noopener">Open saved build request</a>
+        @if (job.CanRetryCaptured) { <button type="button" @onclick="() => Command(() => Jobs.ResumeAsync(job.Id, _lifetime.Token))" disabled="@_busy">Retry saved output / check status</button> }
+        @if (job.LocksTarget || job.RemoteUnconfirmed) { <button type="button" @onclick="() => Command(() => Jobs.CancelAsync(job.Id, _lifetime.Token))" disabled="@_busy">Cancel build</button> }
+        @if (job.Error is not null) { <p role="status">@job.Error</p> }
+    }
+    @if (_error is not null) { <p role="alert">@_error</p> }
+    @if (_notice is not null) { <p role="status">@_notice</p> }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public AssetLibrary Library { get; set; } = null!;
+    [Parameter, EditorRequired] public ShotVideoBinding Binding { get; set; } = null!;
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public EventCallback Changed { get; set; }
+    private readonly CancellationTokenSource _lifetime = new();
+    private bool _busy, _disposed;
+    private int _canvas;
+    private Guid _bindingId;
+    private RefModPreparedBuild? _prepared;
+    private ReelRefModReference? _built;
+    private string? _error, _notice;
+    private RefModBuildRequest PreparedRequest => _prepared!.Submission.Snapshot.Deserialize<RefModBuildRequest>(lumibelle.Services.Story.AtomicJsonFile.Options)!;
+    private ReelRefModRecipe PreparedRecipe => PreparedRequest.Recipe;
+    private bool PreparedMatches {
+        get {
+            if (_prepared is null) return false;
+            try { var recipe = PreparedRecipe; var size = ReelRefMods.Canvases[_canvas];
+                return recipe.Selection == ReelRefMods.Selection(Binding) && (recipe.Width, recipe.Height) == size; }
+            catch (lumibelle.Services.Story.WorkspaceStoreException) { return false; }
+        }
+    }
+    private AiJobHeader? Active => Jobs.View.Jobs.FirstOrDefault(j => j.Kind == AiJobKind.RefModBuild &&
+        j.Target.ProjectId == Library.ProjectId && j.Target.ReelId == Binding.Media.Id && (j.LocksTarget || j.RemoteUnconfirmed));
+    private AiJobHeader? ObservedJob => _prepared is null ? Active : Jobs.View.Jobs.FirstOrDefault(j => j.Id == _prepared.Submission.Id) ?? Active;
+    protected override void OnInitialized() => Jobs.Changed += JobsChanged;
+    protected override void OnParametersSet()
+    {
+        if (_bindingId == Binding.Id) return;
+        _bindingId = Binding.Id; _prepared = null; _built = null; _error = _notice = null;
+        _canvas = 0;
+        if (Binding.RefMod is { } mod)
+            for (var i = 0; i < ReelRefMods.Canvases.Count; i++)
+                if (ReelRefMods.Canvases[i] == (mod.Recipe.Width, mod.Recipe.Height)) _canvas = i;
+    }
+    private void ChangeCanvas(ChangeEventArgs e)
+    { if (!_busy && int.TryParse(e.Value?.ToString(), out var i) && i >= 0 && i < ReelRefMods.Canvases.Count) { _canvas = i; _notice = null; } }
+    private Task Prepare(bool reuse = true) => Command(async () => {
+        var binding = Binding; var project = Library.ProjectId; var size = ReelRefMods.Canvases[_canvas];
+        var prepared = await Capture.PrepareAsync(project, binding, size.Width, size.Height, await Reviews.TabIdAsync(), _lifetime.Token, reuse);
+        if (!_disposed && Binding.Id == binding.Id && project == Library.ProjectId) { _prepared = prepared; _built = prepared.Existing; }
+    });
+    private Task Build() => Command(async () => {
+        if (_prepared is null || !PreparedMatches || _built is not null) return;
+        // Reusing this captured submission ID makes a lost enqueue acknowledgement idempotent.
+        await Jobs.EnqueueAsync(_prepared.Submission, _lifetime.Token);
+        await ReadResult();
+    });
+    private Task UseBuilt() => Command(async () => {
+        if (_built is null || !PreparedMatches || !ReelRefMods.Matches(Binding, _built)) return;
+        if (!ReelRefMods.Attach(Binding, _built))
+        {
+            _notice = "The cache is ready for the same accepted images and recipe. The reference and prompt are unchanged.";
+            return;
+        }
+        _notice = "Accepted RefMod reference attached. Apply changes, then review the prompt's Video numbering. Missing server caches will rebuild from these images.";
+        await Changed.InvokeAsync();
+    });
+    private async Task ReadResult()
+    {
+        if (_prepared is null) return;
+        var prepared = _prepared;
+        var result = await JobStore.ReadArtifactAsync<RefModBuildResult>(prepared.Submission.Id, AiJobArtifact.Result, _lifetime.Token);
+        if (!_disposed && ReferenceEquals(prepared, _prepared) && result is not null) {
+            ReelRefMods.Validate(result.Reference);
+            if (result.Reference.Recipe.Key != PreparedRecipe.Key) throw new lumibelle.Services.Story.WorkspaceStoreException("The completed build belongs to another frame selection.");
+            if (result.Reference.ComfyUrl != prepared.Submission.Snapshot.Deserialize<RefModBuildRequest>(lumibelle.Services.Story.AtomicJsonFile.Options)!.ComfyUrl)
+                throw new lumibelle.Services.Story.WorkspaceStoreException("The completed build belongs to another server.");
+            _built = result.Reference;
+        }
+    }
+    private void JobsChanged()
+    {
+        if (_disposed) return;
+        _ = InvokeAsync(async () => {
+            try { await ReadResult(); }
+            catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+            catch (Exception e) { if (!_disposed) _error = e.Message; }
+            if (!_disposed) StateHasChanged();
+        });
+    }
+    private async Task Command(Func<Task> action)
+    {
+        if (_busy || Disabled || _disposed) return;
+        _busy = true; _error = _notice = null;
+        try { await action(); }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (Exception e) { if (!_disposed) _error = e.Message; }
+        finally { _busy = false; }
+    }
+    public async ValueTask DisposeAsync()
+    { _disposed = true; Jobs.Changed -= JobsChanged; await _lifetime.CancelAsync(); _lifetime.Dispose(); }
+}

@@ -1,0 +1,29 @@
+<li class="reference-selection-row" @attributes="Attributes">
+    <div class="reference-summary">
+        @Thumbnail
+        <span><strong>@Title</strong>@if (!string.IsNullOrEmpty(Name)) { <small>@Name</small> }<small>@Status</small></span>
+    </div>
+    <div class="reference-action-buttons" role="group" aria-label="@($"{Label} actions")">
+        @Actions
+        <button type="button" class="reference-move-up" aria-label="@($"Move {Label} up")" title="Move up" disabled="@(Disabled || First)" @onclick="MoveUp"><MudIcon Icon="@Icons.Material.Outlined.ArrowUpward" Size="Size.Small" aria-hidden="true" /></button>
+        <button type="button" class="reference-move-down" aria-label="@($"Move {Label} down")" title="Move down" disabled="@(Disabled || Last)" @onclick="MoveDown"><MudIcon Icon="@Icons.Material.Outlined.ArrowDownward" Size="Size.Small" aria-hidden="true" /></button>
+        <button type="button" class="reference-remove" aria-label="@($"Remove {Label}")" title="Remove reference" disabled="@Disabled" @onclick="Remove"><MudIcon Icon="@Icons.Material.Outlined.Close" Size="Size.Small" aria-hidden="true" /></button>
+    </div>
+    @if (ChildContent is not null) { <div class="reference-row-details">@ChildContent</div> }
+</li>
+@code {
+    [Parameter, EditorRequired] public string Label { get; set; } = "";
+    [Parameter, EditorRequired] public string Title { get; set; } = "";
+    [Parameter] public string? Name { get; set; }
+    [Parameter] public string? Status { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public bool First { get; set; }
+    [Parameter] public bool Last { get; set; }
+    [Parameter] public EventCallback MoveUp { get; set; }
+    [Parameter] public EventCallback MoveDown { get; set; }
+    [Parameter] public EventCallback Remove { get; set; }
+    [Parameter] public RenderFragment? Thumbnail { get; set; }
+    [Parameter] public RenderFragment? Actions { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+    [Parameter(CaptureUnmatchedValues = true)] public Dictionary<string, object>? Attributes { get; set; }
+}

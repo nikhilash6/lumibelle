@@ -1,0 +1,157 @@
+@inject IComfyLoraCatalog Catalog
+@using System.Globalization
+
+<section class="settings-card lora-library">
+    <h2>LoRAs <span class="lora-count">· @Entries.Count registered</span></h2>
+    <p>Register files already installed in ComfyUI. Assign the workflow yourself; registration does not test compatibility.</p>
+    <div class="lora-actions"><button type="button" @onclick="RefreshAsync" disabled="@Locked" @ref="_refreshButton">Refresh installed LoRAs</button><button type="button" @onclick="NewEntry" disabled="@(Locked || _check is not { Success: true })">Add registration</button></div>
+    @if (_check is not null)
+    {
+        <p role="status" class="field-hint">@(_check.Success ? $"{_check.Files.Count} installed LoRA {(_check.Files.Count == 1 ? "file" : "files")} found in ComfyUI." : _check.Message)</p>
+    }
+    @if (Entries.Count > 0)
+    {
+        <label for="lora-library-search">Search LoRA library</label><input id="lora-library-search" @bind="_search" @bind:event="oninput" @bind:after="ResetPage" placeholder="Name, file path, or tag" />
+        <label for="lora-library-workflow">Workflow filter</label><select id="lora-library-workflow" @bind="_filter" @bind:after="ResetPage"><option value="">All workflows</option>@foreach (var workflow in Enum.GetValues<LoraWorkflow>()) { <option value="@workflow">@workflow.Label()</option> }</select>
+        <label for="lora-library-tag">Tag filter</label><select id="lora-library-tag" @bind="_tagFilter" @bind:after="ResetPage"><option value="">All tags</option><option value="@Untagged">Untagged</option>@foreach (var tag in KnownTags) { <option value="@($"tag:{tag}")">@tag</option> }</select>
+    }
+    else
+    {
+        <p class="field-hint">No LoRAs registered yet. Refresh installed LoRAs, then choose Add registration to browse your ComfyUI files.</p>
+    }
+    @foreach (var definition in Filtered.Skip(Page * PageSize).Take(PageSize))
+    {
+        var item = definition;
+        <div class="lora-row" @key="LoraPolicy.Key(item.Reference)">
+            <strong>@item.Reference.Name</strong><small>@item.Reference.FileName</small>
+            <div class="lora-tags">@foreach (var tag in item.Tags) { <span>@tag</span> }</div>
+            <small>@item.Reference.Workflow.Label() · default strength @item.DefaultStrength · @item.Reference.ComfyUrl</small>
+            @if (item.TriggerText.Length > 0) { <small>Trigger: @item.TriggerText</small> }
+            @if (RegistrationIssue(item) is { } issue) { <p class="field-hint">@issue</p> }
+            <div class="lora-actions"><button type="button" disabled="@Locked" @onclick="() => Edit(item)">Edit @item.Reference.Name</button><button type="button" disabled="@Locked" @onclick="() => Remove(item)">Remove @item.Reference.Name</button></div>
+        </div>
+    }
+    @if (Entries.Count > 0 && Filtered.Count == 0) { <p class="field-hint">No matching registered LoRAs.</p> }
+    @if (PageCount > 1)
+    { <nav class="lora-actions" aria-label="LoRA library pages"><button type="button" @onclick="() => _page--" disabled="@(Page == 0)">Previous</button><span>Page @(Page + 1) of @PageCount</span><button type="button" @onclick="() => _page++" disabled="@(Page == PageCount - 1)">Next</button></nav> }
+    @if (_editing)
+    {
+        <div class="lora-registration">
+            <h3>@(_originalKey is null ? "Register installed LoRA" : "Edit registration")</h3>
+            @if (_originalKey is null)
+            {
+                <label for="lora-file-search">Find installed file</label><input id="lora-file-search" @bind="_fileSearch" @bind:event="oninput" disabled="@Locked" />
+                <label for="lora-file">Installed file</label><select id="lora-file" @bind="_file" disabled="@Locked"><option value="">Choose a file…</option>@foreach (var file in InstalledFiles) { <option value="@file">@file</option> }</select>
+            }
+            else { <p class="field-hint">@_file · @_server</p> }
+            <label for="lora-name">Friendly name</label><input id="lora-name" @bind="_name" @bind:event="oninput" disabled="@Locked" @ref="_nameInput" />
+            <label for="lora-tags">Tags (optional)</label><input id="lora-tags" @bind="_tags" @bind:event="oninput" disabled="@Locked" aria-describedby="lora-tags-hint" placeholder="character, anime, sfw" />
+            <p id="lora-tags-hint" class="field-hint">Separate tags with commas. Projects can use these tags to show or hide LoRAs.</p>
+            <label for="lora-workflow">Assigned workflow</label><select id="lora-workflow" @bind="_workflow" disabled="@Locked">@foreach (var workflow in Enum.GetValues<LoraWorkflow>()) { <option value="@workflow">@workflow.Label()</option> }</select>
+            <label for="lora-default-strength">Default strength</label><input id="lora-default-strength" type="number" step="0.01" min="-100" max="100" @bind="_strength" disabled="@Locked" />
+            <label for="lora-trigger">Trigger text (optional)</label><textarea id="lora-trigger" rows="2" @bind="_trigger" @bind:event="oninput" disabled="@Locked"></textarea>
+        </div>
+    }
+    @if (_draft is not null || _editing)
+    {
+        <p class="field-hint">Removing a registration leaves its ComfyUI file and saved generation history intact.</p>
+        <div class="settings-section-actions"><button type="button" @onclick="SaveAsync" disabled="@Locked" @ref="_saveButton">Save LoRA library</button><button type="button" @onclick="Cancel" disabled="@Locked">Cancel LoRA changes</button></div>
+    }
+    @if (_error is not null) { <p role="alert" class="generation-error">@_error</p> }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public AiSettings Settings { get; set; } = new();
+    [Parameter] public bool Busy { get; set; }
+    [Parameter, EditorRequired] public Func<IReadOnlyList<LoraDefinition>, Task<bool>> SaveLibrary { get; set; } = default!;
+    private bool _checking, _editing, _interactive;
+    private bool Locked => Busy || _checking || !_interactive;
+    private ElementReference _refreshButton, _nameInput, _saveButton;
+    private string? _focus;
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender) { _interactive = true; StateHasChanged(); }
+        if (_focus is { } target) { _focus = null; await (target == "name" ? _nameInput : target == "save" ? _saveButton : _refreshButton).FocusAsync(); }
+    }
+    private ComfyLoraCheck? _check;
+    private string? _catalogServer, _originalKey, _error;
+    private List<LoraDefinition>? _draft;
+    private string _search = "", _filter = "", _fileSearch = "", _file = "", _server = "", _name = "", _trigger = "", _strength = "1", _tags = "", _tagFilter = "";
+    private const string Untagged = "__untagged__";
+    private IEnumerable<string> KnownTags => Entries.SelectMany(d => d.Tags).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase);
+    private LoraWorkflow _workflow;
+    private int _page;
+    private const int PageSize = 15;
+    private IReadOnlyList<LoraDefinition> Entries => _draft ?? Settings.LoraLibrary;
+    private List<LoraDefinition> Filtered => Entries.Where(d => (_filter.Length == 0 || d.Reference.Workflow.ToString() == _filter) &&
+        (_tagFilter.Length == 0 || (_tagFilter == Untagged ? d.Tags.Count == 0 : d.Tags.Any(t => $"tag:{t}".Equals(_tagFilter, StringComparison.OrdinalIgnoreCase)))) &&
+        (d.Reference.Name.Contains(_search, StringComparison.OrdinalIgnoreCase) || d.Reference.FileName.Contains(_search, StringComparison.OrdinalIgnoreCase) || d.Tags.Any(t => t.Contains(_search, StringComparison.OrdinalIgnoreCase))))
+        .OrderBy(d => d.Reference.Name, StringComparer.OrdinalIgnoreCase).ThenBy(d => d.Reference.FileName).ToList();
+    private int PageCount => Math.Max(1, (Filtered.Count + PageSize - 1) / PageSize);
+    private int Page => Math.Min(_page, PageCount - 1);
+    private IEnumerable<string> InstalledFiles => (_check?.Files ?? []).Where(f => !LoraPolicy.IsIdentityEdit(f) && !LoraPolicy.ReservedH3(f, Settings.H3) && f.Contains(_fileSearch, StringComparison.OrdinalIgnoreCase));
+    private void ResetPage() => _page = 0;
+    protected override void OnParametersSet()
+    {
+        if (_catalogServer != AiProviderRegistry.NormalizeComfyUrl(Settings.ComfyUrl)) { _check = null; _catalogServer = AiProviderRegistry.NormalizeComfyUrl(Settings.ComfyUrl); }
+        if (Entries.Count == 0) { _search = _filter = _tagFilter = ""; ResetPage(); }
+    }
+    private async Task RefreshAsync()
+    {
+        if (Locked) return;
+        _checking = true;
+        var snapshot = Settings; var server = AiProviderRegistry.NormalizeComfyUrl(snapshot.ComfyUrl);
+        try { var check = await Catalog.CheckAsync(snapshot); if (server == _catalogServer) _check = check; }
+        finally { _checking = false; }
+    }
+    private string? RegistrationIssue(LoraDefinition item)
+    {
+        if (AiProviderRegistry.NormalizeComfyUrl(item.Reference.ComfyUrl) != _catalogServer) return "Registered on another ComfyUI server.";
+        if (_check is null) return "Availability not checked.";
+        return !_check.Success ? "Availability unavailable." : !_check.Files.Contains(item.Reference.FileName, StringComparer.Ordinal) ? "Installed file is missing." : null;
+    }
+    private void NewEntry()
+    {
+        if (Locked) return;
+        _editing = true; _originalKey = null; _fileSearch = _file = _name = _trigger = _tags = ""; _strength = "1";
+        _server = Settings.ComfyUrl; _workflow = (Settings.DefaultImageWorkflow == ImageWorkflow.CodexImages ? ImageWorkflow.Krea2 : Settings.DefaultImageWorkflow).LoraWorkflow(); _error = null; _focus = "name";
+    }
+    private void Edit(LoraDefinition item)
+    {
+        if (Locked) return;
+        _editing = true; _originalKey = LoraPolicy.Key(item.Reference); _file = item.Reference.FileName; _server = item.Reference.ComfyUrl;
+        _name = item.Reference.Name; _workflow = item.Reference.Workflow; _strength = item.DefaultStrength.ToString(CultureInfo.InvariantCulture); _trigger = item.TriggerText; _error = null; _focus = "name";
+        _tags = string.Join(", ", item.Tags);
+    }
+    private void Remove(LoraDefinition item)
+    {
+        if (Locked) return;
+        _draft = Entries.Where(d => !LoraPolicy.Same(d.Reference, item.Reference)).ToList();
+        if (_originalKey == LoraPolicy.Key(item.Reference)) _editing = false;
+        if (_draft.Count == 0) { _search = _filter = _tagFilter = ""; ResetPage(); }
+        _page = Page; _focus = "save";
+    }
+    private void Cancel() { _draft = null; _editing = false; _error = null; _focus = "refresh"; }
+    private async Task SaveAsync()
+    {
+        if (Locked) return;
+        var next = Entries.ToList(); _error = null;
+        if (_editing)
+        {
+            if (!float.TryParse(_strength, NumberStyles.Float, CultureInfo.InvariantCulture, out var strength) || LoraPolicy.InvalidStrength(strength))
+            { _error = "Enter a finite default strength between -100 and 100."; return; }
+            var tags = LoraPolicy.ParseTags(_tags);
+            if (LoraPolicy.InvalidTags(tags)) { _error = "Use up to 32 tags, with 1–64 characters per tag."; return; }
+            var item = new LoraDefinition(new(_server, _file, _workflow, _name.Trim()), strength, _trigger.Trim()) { Tags = tags };
+            if (LoraPolicy.Invalid(item.Reference) || item.Reference.Workflow == LoraWorkflow.MiniMaxH3Ref2VA && LoraPolicy.ReservedH3(item.Reference.FileName, Settings.H3)) { _error = "Choose an installed optional LoRA and enter a friendly name."; return; }
+            if (_originalKey is null && (_check is not { Success: true } || _catalogServer != AiProviderRegistry.NormalizeComfyUrl(_server) || !_check.Files.Contains(_file, StringComparer.Ordinal)))
+            { _error = "Refresh and choose a file installed on the current server."; return; }
+            if (_catalogServer == AiProviderRegistry.NormalizeComfyUrl(_server) && _check is { Success: true } && (strength < _check.MinimumStrength || strength > _check.MaximumStrength))
+            { _error = $"The loader supports strengths from {_check.MinimumStrength} to {_check.MaximumStrength}."; return; }
+            if (_originalKey is not null) next.RemoveAll(d => LoraPolicy.Key(d.Reference) == _originalKey);
+            if (next.Any(d => LoraPolicy.Same(d.Reference, item.Reference))) { _error = "That exact file is already registered on this server."; return; }
+            next.Add(item);
+        }
+        if (await SaveLibrary(next)) Cancel();
+    }
+}

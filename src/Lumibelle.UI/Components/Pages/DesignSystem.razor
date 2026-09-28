@@ -1,0 +1,70 @@
+@page "/dev/design-system"
+@using Microsoft.Extensions.Hosting
+@inject IHostEnvironment Host
+@inject AppearanceState Appearance
+<PageTitle>Design system · Lumibelle</PageTitle>
+@if (!Host.IsDevelopment())
+{
+    <h1>Page not found</h1><a href="/">Back to projects</a>
+}
+else
+{
+    <div class="design-gallery">
+        <header class="library-heading"><div><p class="eyebrow">DEVELOPMENT</p><h1>Lumibelle design system</h1><p>Production components, shared tokens, and deterministic states. No generation requests.</p></div>
+            <div class="design-actions"><MudButton OnClick="() => Appearance.SetAsync(ThemePreference.Light)">Light</MudButton><MudButton OnClick="() => Appearance.SetAsync(ThemePreference.Dark)">Dark</MudButton><MudButton OnClick="() => Appearance.SetAsync(ThemePreference.System)">System</MudButton></div>
+        </header>
+        <section aria-label="Palette" class="design-swatches">
+            @foreach (var token in new[] { "canvas", "surface", "surface-subtle", "surface-selected", "text", "text-muted", "accent", "border", "control-border", "success", "warning", "danger" })
+            { <div><span style="background:var(--lumi-@token)"></span><code>@token</code></div> }
+        </section>
+        <div class="design-grid">
+            <section class="design-example"><h2>Actions</h2><div class="design-actions">
+                <MudButton Variant="Variant.Filled" Color="Color.Primary">Generate</MudButton>
+                <MudButton Variant="Variant.Outlined">Save draft</MudButton><MudButton>Cancel</MudButton>
+                <MudButton Color="Color.Error">Delete</MudButton><MudButton Disabled="true">Unavailable</MudButton>
+                <MudIconButton Icon="@Icons.Material.Outlined.MoreHoriz" aria-label="More options" />
+                <MudLink Href="#design-fields">Edit details</MudLink>
+                <HelpHint Label="Actions" Text="Primary actions commit an intentional step. Secondary actions preserve or inspect work." />
+            </div></section>
+            <section class="design-example"><h2>AI assistance</h2><div class="design-actions">
+                <TextRequestAction Label="Assist" />
+                <MudButton Class="ai-assist-action" Variant="Variant.Filled" Color="Color.Primary"><AiAssistIcon />Enhance prompt</MudButton>
+                <TextRequestAction Label="Assist" Disabled="true" />
+            </div><p class="field-hint">The ribbon and sparkle identify AI assistance. Request progress and attention states retain their own indicators.</p></section>
+            <section class="design-example" id="design-fields"><h2>Fields</h2>
+                <MudTextField T="string" Label="Asset name" Value='@("Mira")' Variant="Variant.Outlined" Margin="Margin.Dense" />
+                <MudTextField T="string" Label="Required description" Error="true" ErrorText="Add a description before continuing." Variant="Variant.Outlined" Margin="Margin.Dense" />
+                <label class="design-field">Output<select><option>Landscape · 16:9</option><option>Portrait · 9:16</option></select></label>
+                <label class="check-row"><input type="checkbox" checked /> Keep original audio</label>
+            </section>
+            <section class="design-example"><h2>Feedback</h2><div class="design-feedback">
+                <MudAlert Severity="Severity.Success" Dense="true">Changes saved</MudAlert>
+                <MudAlert Severity="Severity.Warning" Dense="true">The source changed. Review before applying.</MudAlert>
+                <MudAlert Severity="Severity.Error" Dense="true">Couldn’t save. Your draft is still here.</MudAlert>
+                <MudProgressLinear Color="Color.Primary" Value="45" aria-label="Generation 45 percent complete" />
+                <p class="field-hint">Waiting for a provider · queued</p>
+            </div></section>
+            <section class="design-example"><h2>Review changes</h2><ComparedScreenplay Blocks="Before" Before="true" /><ComparedScreenplay Blocks="After" />
+                <p class="script-block"><span class="script-applied-change">The room fills with morning light.</span></p>
+                <p class="field-hint">Insertions, deletions, and applied changes use distinct treatments.</p>
+            </section>
+            <section class="design-example"><h2>Media selection</h2><div class="reference-grid asset-media-gallery">
+                @foreach (var selected in new[] { false, true })
+                { <article class="reference-card asset-media-card @(selected ? "selected" : "")"><button class="media-preview" aria-label="Preview reference"><img src="_content/Lumibelle.UI/branding/lumibelle-mark.png" alt="Lumibelle film ribbon reference" /></button><div class="reference-card-body"><button class="media-select" aria-label="Select reference" aria-pressed="@selected.ToString().ToLowerInvariant()"></button><div class="media-card-heading"><strong class="media-name">@(selected ? "Selected reference" : "Reference image")</strong><div class="reference-actions"><MudIconButton Icon="@Icons.Material.Outlined.MoreHoriz" aria-label="Reference actions" /></div></div><small class="field-hint">Full image · preserved colors</small></div></article> }
+            </div></section>
+            <section class="design-example"><h2>Dialog sizes</h2><p>Bounded content with a stable title, scrollable body, and action footer.</p><div class="design-actions">
+                @foreach (var size in new[] { MaxWidth.Small, MaxWidth.Medium, MaxWidth.Large })
+                { <MudButton OnClick="() => OpenDialog(size)">@size</MudButton> }
+            </div><h3>Empty state</h3><p class="field-hint">No takes yet. Choose a reference and generate your first take.</p></section>
+            <section class="design-example design-pane"><StudioPane Label="Example inspector"><Header><strong>Image tools</strong></Header><ChildContent><label class="design-field">Prompt<textarea rows="4">Soft morning light through a studio window.</textarea></label></ChildContent><Footer><MudButton Variant="Variant.Filled" Color="Color.Primary">Generate image</MudButton></Footer></StudioPane></section>
+        </div>
+        <InlineDialog @bind-Visible="_dialog" Options="_options" Title="Reference details" Context="Development gallery" CloseLabel="Close reference details"><DialogContent><label class="design-field">Name<input value="Morning light" /></label><p class="field-hint">A deterministic example using the production dialog surface.</p>@for (var i = 0; i < 12; i++) { <p>Reference @(@i + 1) · preserve the composition and original colors.</p> }</DialogContent><DialogActions><span class="review-save-hint">Draft changes</span><MudButton OnClick="() => _dialog = false">Cancel</MudButton><MudButton OnClick="() => _dialog = false" Variant="Variant.Filled" Color="Color.Primary">Save changes</MudButton></DialogActions></InlineDialog>
+    </div>
+}
+@code {
+    private bool _dialog;
+    private DialogOptions _options = new() { MaxWidth = MaxWidth.Small, FullWidth = true, CloseButton = true };
+    private void OpenDialog(MaxWidth width) { _options = _options with { MaxWidth = width }; _dialog = true; }
+    private static readonly ComparedBlock[] Before = [new(ScriptBlockKind.Action, [new("The room is dark.", false, false, true)], "Removed")];
+    private static readonly ComparedBlock[] After = [new(ScriptBlockKind.Action, [new("The room fills with morning light.", false, false, true)], "Added")];
+}

@@ -1,0 +1,5 @@
+.reel-replacement-field { display:grid; gap:.4rem; margin:0 0 .75rem; }
+.reel-replacement-field select { width:100%; min-width:0; padding:8px; border: 1px solid var(--lumi-control-border); border-radius: var(--lumi-radius-control); background: var(--lumi-surface); color: var(--ink); font:inherit; }
+.reel-replacement-dialog h3 { margin:1rem 0 .25rem; font-size:var(--lumi-font-size-subheading); }
+.reel-replacement-shots { margin:0; padding-left:1.2rem; max-height:40vh; overflow:auto; }
+.reel-replacement-issue { color: var(--muted); }

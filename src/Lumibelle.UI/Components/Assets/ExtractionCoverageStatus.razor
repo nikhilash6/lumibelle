@@ -1,0 +1,11 @@
+<section class="extraction-coverage-status" aria-label="Script coverage">
+    <div class="extraction-coverage-heading"><strong>Script coverage</strong><span class="coverage-summary">@Summary</span></div>
+    <label class="extraction-reminder-choice"><input type="checkbox" checked="@Ignored" @onchange="e => IgnoredChanged.InvokeAsync(e.Value is true)" />Ignore extraction reminders for this project</label>
+    @if (Ignored) { <p class="field-hint">The badge is hidden. You can still use extraction; scenes keep their review status.</p> }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public string Summary { get; set; } = "";
+    [Parameter] public bool Ignored { get; set; }
+    [Parameter] public EventCallback<bool> IgnoredChanged { get; set; }
+}

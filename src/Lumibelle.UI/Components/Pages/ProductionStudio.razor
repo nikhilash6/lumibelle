@@ -1,0 +1,685 @@
+@inherits ProjectAwareComponent
+@using lumibelle.Components.AI
+@inject IProjectStore Projects
+@inject IScriptStore Scripts
+@inject IShotStore Store
+@inject IAssetStore AssetStore
+@inject IVoiceStore Voices
+@inject IReferenceVideoStore VideoReferences
+@inject IImageTrashStore ImageTrash
+@inject IAiSettingsStore Settings
+@inject IVideoGenerator Generator
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+@implements IAsyncDisposable
+
+@inject IProductionStore Production
+
+<PageTitle>Shots · Lumibelle</PageTitle>
+<NavigationLock ConfirmExternalNavigation="@(_dirty || BulkGenerateLocked)" OnBeforeInternalNavigation="BeforeNavigation" />
+<EditSessionRegistration Save="SaveForCloseAsync" />
+@if (_project is null) { <p role="status">@(_error ?? "Opening Shots…")</p> }
+else
+{
+    <ProjectNavigation Project="_project" CurrentStudio="shots" />
+    <StudioPageHeader Title="Shots">
+        <div data-interactive="@(_interactive ? "true" : "false")" class="shots-actions shots-heading"><span role="status">@_saveStatus</span><button disabled="@(!_dirty || _saving)" @onclick="Save">Save</button><button disabled="@(_undo.Count == 0)" @onclick="UndoEdit">Undo</button><button @onclick="() => _recoveryOpen = true">Recovery</button></div>
+    </StudioPageHeader>
+    @if (_error is not null && _loadFailure is null) { <MudAlert Severity="Severity.Error"><span role="alert">@_error</span>@if (_saveFailed) { <button @onclick="Reload">Reload saved version</button><button @onclick="DownloadDraft">Download unsaved copy</button> }</MudAlert> }
+    @if (_loadFailure is not null) { <LoadFailure Title="Couldn’t open Shots" Error="_loadFailure" Retry="RetryLoadAsync" /> }
+    else {
+    <StudioWorkspace @ref="_workspace" Studio="Shots" ProjectId="Id" LeftLabel="Shots" RightLabel="Shot tools" SelectionKey="@_selected?.ToString()">
+        <Left><StudioPane Class="shots-outline" Label="Shots"><Header>
+            <div class="shots-library-heading"><h2>Shots <small>@_doc.Shots.Count</small></h2><button @ref="_addShotButton" @onclick="AddShot">+ Shot</button></div>
+            <div class="shots-library-tools" @ref="_planningOriginElement"><TextAssistance @ref="_planningAssist" ProjectId="Id" Studio="TextAssistantStudio.Shots" Request="PlanningPresentation" Preparing="_planningSubmitting" HasError="@(_pendingPlanning is not null)" ReviewRequested="InspectPlanning" CancelRequested="CancelPlanning" Label="Draft shots" Title="Draft shots" Opened="PreparePlanning" SelectionChanged="value => _model = value" ModelLocked="@(_planning || _planningSubmitting)">
+<ChildContent>        <fieldset disabled="@PlanningComposerLocked"><legend>Script scenes</legend>@foreach (var scene in PlanningScenes) { <label class="check-row"><input type="checkbox" checked="@_sceneSelection.Contains(scene.Id)" @onchange="e => ChooseScene(scene.Id, e.Value is true)" />@scene.Title</label> }</fieldset>
+        <label>Maximum shot length (seconds)<input type="number" min="1" max="15" step="0.1" @bind="_maximum" disabled="@PlanningComposerLocked" /></label><p class="field-hint">@MaximumLabel · applies to this breakdown only.</p>
+        <label>Directing instructions (optional)<textarea rows="3" @bind="_instructions" @bind:event="oninput" disabled="@PlanningComposerLocked"></textarea></label>
+@if (_planningError is not null) { <p role="alert">@_planningError</p> }</ChildContent>
+<Actions><MudButton Class="ai-assist-action" OnClick="Draft" Disabled="@(_planning || _planningSubmitting || _pendingPlanning is not null || _model?.Ready != true || _sceneSelection.Count == 0)" Variant="Variant.Filled" Color="Color.Primary"><AiAssistIcon />Draft shots</MudButton>@if (_pendingPlanning is not null) { <button @onclick="RetryPlanningEnqueueAsync">Retry saving request</button> }</Actions>
+</TextAssistance><div class="shots-library-options" @ref="_bulkDeleteButton"><MudMenu Label="Bulk operations" Size="Size.Small" Color="Color.Primary" Dense="true" AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight"><MudMenuItem role="menuitem" OnClick="OpenBulkGenerate">Generate takes…</MudMenuItem><MudMenuItem role="menuitem" OnClick="() => OpenShotDeletion()">Delete shots…</MudMenuItem></MudMenu></div></div><input type="search" aria-label="Search shots" placeholder="Search shots…" @bind="_filter" @bind:event="oninput" />
+            <label class="shots-status-filter"><span class="visually-hidden">Prompt status</span><select aria-label="Filter shots by prompt status" @bind="_promptStatusFilter">
+                <option value="all">All shots</option><option value="attention">Needs prompt attention</option>
+                <option value="missing">Prompt missing</option><option value="changed">References changed</option><option value="review">Review prompt</option>
+            </select></label>
+            @if (!PromptStatusKnown && _doc.Shots.Count > 0) { <small class="shots-attention-summary" role="status">Checking prompts…</small> }
+            else if (PromptAttentionCount is > 0 and var attention) { <small class="shots-attention-summary" role="status">@attention @(attention == 1 ? "shot needs" : "shots need") prompt attention</small> }
+        </Header><ChildContent>
+            @if (_doc.Shots.Count > 0 && !VisibleGroups.Any()) { <p>No shots match these filters.</p><button @onclick="ClearPromptFilters">Show all shots</button> }
+            @foreach (var group in VisibleGroups) { <h2 class="shot-scene-title">@group.First().SceneTitle</h2>@foreach (var item in group) {
+                <div class="shot-outline-item @(item.Id == _selected ? "selected" : "")">
+                <button data-shot-id="@item.Id" class="shot-list-row @(item.Id == _selected ? "selected" : "")" aria-pressed="@(item.Id == _selected ? "true" : "false")" @onclick="() => Select(item.Id)">
+                    <span class="shot-list-thumbnail">@if (OverviewTake(item) is { } thumbnail) { <img src="@TakeUrl(thumbnail.Id, 0)" alt="" loading="lazy" /> } else { <span aria-hidden="true">@((_doc.Shots.IndexOf(item) + 1).ToString("00"))</span> }</span>
+                    <span class="shot-list-copy"><span class="shot-list-title">@(_doc.Shots.IndexOf(item) + 1). @item.Title</span><small>@DurationLabel(item) · @_doc.Takes.Count(t => t.ShotId == item.Id) takes @if (NewTakeCount(item.Id) is > 0 and var fresh) { <span class="shot-new-takes">· @fresh new</span> }</small></span>
+                </button>
+                @if (PromptReviewReady(item.Id)) {
+                    <button @ref="_reviewReadyBadges[item.Id]" class="shot-prompt-review" data-prompt-state="ReviewReady" aria-label="@($"Review the composed prompt for shot {_doc.Shots.IndexOf(item) + 1}: {item.Title}")" title="An AI-composed prompt is ready. Review it, then apply or discard it." @onclick="() => ReviewComposedPrompt(item.Id)">Review ready <span aria-hidden="true">→</span></button>
+                }
+                else if (PromptReferenceCheckFor(item.Id) is { NeedsAttention: true } check) {
+                    <button class="shot-prompt-review" data-prompt-state="@check.State" aria-label="@($"Review prompt for shot {_doc.Shots.IndexOf(item) + 1}: {item.Title}")" title="@check.Detail" @onclick="() => ReviewShotPrompt(item.Id)">@check.Label <span aria-hidden="true">→</span></button>
+                }
+                </div>
+            } }
+        </ChildContent></StudioPane></Left>
+        <Center><StudioPane Class="shot-editor production-editor" Label="Shot editor"><Header>
+            @if (SourceShot is { } identity) {
+                <div class="shot-workspace-identity">
+                    <span class="shot-number">@((_doc.Shots.IndexOf(identity) + 1).ToString("00"))</span>
+                    <input aria-label="Shot title" class="shot-title-input" @bind:get="identity.Title" @bind:set="value => EditCoverage(s => s.Title = value ?? string.Empty)" @bind:event="oninput" />
+                    <MudMenu Label="Shot options" Size="Size.Small" Dense="true" AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight">
+                        <div role="menu" aria-label="Shot options">
+                            <MudMenuItem role="menuitem" Disabled="@(_doc.Shots.IndexOf(identity) == 0)" OnClick="() => MoveShot(-1)">Move shot up</MudMenuItem>
+                            <MudMenuItem role="menuitem" Disabled="@(_doc.Shots.IndexOf(identity) == _doc.Shots.Count - 1)" OnClick="() => MoveShot(1)">Move shot down</MudMenuItem>
+                            <MudMenuItem role="menuitem" OnClick="DuplicateShot">Duplicate shot</MudMenuItem>
+                            <MudMenuItem role="menuitem" Href="@ProjectLink(Id, "/dubs")">Language versions</MudMenuItem>
+                            <MudMenuItem role="menuitem" OnClick="() => OpenShotDeletion(identity.Id)">Delete shot</MudMenuItem>
+                        </div>
+                    </MudMenu>
+                </div>
+                <StudioToolTabs Items="@(new StudioTab[] { new("Shot", "Shot"), new("Takes", "Takes", ShotTakes.Count) })" Label="Shot view" GroupId="center" />
+            }
+        </Header><ChildContent>
+            @if (SourceShot is { } source) { <section class="shot-coverage" data-workspace-panel="Shot" @key="source.Id">
+                    <div class="shot-inline-fields shot-metadata"><label>Scene<select @ref="_shotSceneField" value="@source.SceneId" @onchange="AssignScene"><option value="">Choose a scene</option>@foreach (var scene in Scenes) { <option value="@scene.Id">@scene.Title</option> }</select></label>
+                        <label>Duration (seconds)<input @ref="_shotDurationField" type="number" min="1" max="15" step="0.1" value="@Invariant(source.Duration)" @onchange="DurationChanged" /></label></div>
+
+                    @if (source.ApprovedScriptId != _approved?.Id) { <p class="field-hint">This shot uses an earlier saved script. Its saved source is unchanged.</p> }
+                    <div class="shot-creative-workspace">
+                        <ShotWorkspacePreview ProjectId="Id" ShotId="source.Id" SelectedTakeId="source.SelectedTakeId" Takes="ShotTakes" Review="OpenTake" />
+                        <label class="shot-direction">Action and camera<textarea @ref="_shotDirectionField" rows="9" @bind:get="source.Description" @bind:set="value => EditCoverage(s => s.Description = value ?? string.Empty)" @bind:event="oninput" placeholder="Describe the action, staging, and camera movement in one continuous take."></textarea></label>
+                    </div>
+                    <div class="shots-section-heading"><h2>Dialogue <small>@source.Dialogue.Count</small></h2><button @onclick="AddMasterDialogueAsync">+ Line</button></div>
+                    @if (source.Dialogue.Count == 0) { <p class="field-hint shot-dialogue-empty">No dialogue in this shot.</p> }
+                    @foreach (var line in source.Dialogue)
+                    {
+                        <div class="shot-dialogue" @key="line.Id">
+                            <div class="shot-inline-fields"><label>Speaker<input value="@line.Speaker" @onchange="e => ChangeSpeaker(line.Id, e)" title="A new name renames this speaker throughout the source. An existing name reassigns this line." /></label><label>Language<input @bind:get="line.Language" @bind:set="value => EditLine(line.Id, d => d.Language = value ?? string.Empty)" @bind:event="oninput" /></label></div>
+
+                            <label>Exact dialogue<textarea rows="2" @bind:get="line.Text" @bind:set="value => EditLine(line.Id, d => d.Text = value ?? string.Empty)" @bind:event="oninput"></textarea></label>
+                            <button aria-label="Move dialogue up" disabled="@(source.Dialogue.IndexOf(line) == 0)" @onclick="() => MoveLine(line.Id, -1)">↑</button><button aria-label="Move dialogue down" disabled="@(source.Dialogue.IndexOf(line) == source.Dialogue.Count - 1)" @onclick="() => MoveLine(line.Id, 1)">↓</button><button @onclick="() => EditCoverage(s => s.Dialogue.RemoveAll(d => d.Id == line.Id))">Remove line</button>
+                        </div>
+                    }
+                    <details class="shot-cast-disclosure"><summary>Cast <span>@string.Join(", ", ShotReferences.Characters(source).Select(c => c.Name))</span></summary><ShotCastEditor Shot="source" Changed="characters => EditCast(characters)" /></details>
+                    <details><summary>Sound and music</summary><label>Atmosphere and sound effects<textarea rows="3" @bind:get="source.Atmosphere" @bind:set="value => EditCoverage(s => s.Atmosphere = value ?? string.Empty)" @bind:event="oninput"></textarea></label><label>Background music<textarea rows="2" @bind:get="source.Music" @bind:set="value => EditCoverage(s => s.Music = value ?? string.Empty)" @bind:event="oninput"></textarea></label></details>
+                    <details><summary>Language versions</summary><a href="@ProjectLink(Id, $"/dubs?shotId={source.Id}")">Translate from a rendered master take…</a></details>
+                    <details><summary>Script source</summary><pre class="shot-source">@source.SourceExcerpt</pre>@if (source.Planning is { } origin) { <p>Drafted with @origin.Model.Name · maximum @origin.RequestedMaximum s · @origin.Profile</p> }</details>
+
+            </section> }
+            @if (Current is { } composition && Selected is { } shot) {
+
+                <section data-workspace-panel="Takes" data-ai-review hidden>
+                    @{ var visibleTakes = FilteredTakes; }
+                    @* Shown takes stop being new once their thumbnails have loaded in this visible view. *@
+                    <lumibelle.Components.AI.AiResultAcknowledgement Observed="ShownTakeJobs(visibleTakes)" MediaByJob="ShownTakeMedia(visibleTakes)" />
+                    <div class="takes-heading"><h2>Takes <small class="take-filter-count" role="status">@visibleTakes.Count of @ShotTakes.Count</small></h2>
+                        <div class="take-filters">
+                            <label>Language<select aria-label="Filter takes by language" @bind="_takeLanguage"><option value="">Master</option><option value="*">All languages</option>@foreach (var language in lumibelle.Services.Shots.TakeLanguages.Choices(ShotTakes)) { <option value="@language.Code">@language.Name</option> }</select></label>
+                            <label>Setup<select aria-label="Filter takes by setup" @bind="_takeSetupFilter"><option value="">All setups</option>@foreach (var setup in TakeSetupOptions) { <option value="@setup.Id">@setup.Name</option> }</select></label>
+                            <label>Inputs<select aria-label="Filter takes by input changes" @bind="_takeInputFilter"><option value="all">All takes</option><option value="current">Current inputs</option><option value="changed">Any changes</option><option value="script">Script changed</option><option value="prompt">Prompt changed</option><option value="references">References changed</option><option value="unknown">Comparison incomplete</option></select></label>
+                        </div>
+                    </div>
+                    @if (ShotTakes.Count > 0) {
+                        <div class="take-selection-toolbar">
+                            <button disabled="@_mediaBusy" @onclick="ToggleTakeSelection">@(SelectingTakes ? "Cancel selection" : "Select multiple")</button>
+                            @if (SelectingTakes) {
+                                <span role="status">@_moveTakeIds.Count selected</span>
+                                <button disabled="@(_mediaBusy || _moveTakeIds.Count == 0 || _doc.Shots.Count < 2)" @onclick="OpenMoveTakes">Move to shot…</button>
+                            }
+                        </div>
+                    }
+                    <div class="unified-take-gallery">@foreach (var take in visibleTakes) {
+                        <article class="unified-take-card @(SourceShot?.SelectedTakeId == take.Id ? "is-selected" : "")" data-take-id="@take.Id">
+                            <button class="take-preview" @onclick="() => OpenTake(take)"><img data-ai-candidate="@take.Id" src="@TakeUrl(take.Id, 0)" alt="Play take @(ShotTakes.IndexOf(take) + 1)" loading="lazy" /><span class="take-play">▶ Play</span><span class="take-resolution-badge" title="@TakeDisplay.Dimensions(take)">@TakeDisplay.Badge(take)</span></button>
+                            <div class="take-caption">
+                                @if (SelectingTakes) { <label class="check-row"><input type="checkbox" aria-label="Select take @(ShotTakes.IndexOf(take) + 1)" checked="@_moveTakeIds.Contains(take.Id)" @onchange="e => SelectTakeForMove(take.Id, e.Value is true)" /><strong>Take @(ShotTakes.IndexOf(take) + 1)</strong></label> }
+                                else { <strong>Take @(ShotTakes.IndexOf(take) + 1)</strong> }
+                                @if (IsNewTake(take)) { <span class="new-take-badge">New</span> }
+                                @if (SourceShot?.SelectedTakeId == take.Id) { <span class="selected-take-badge">Selected</span> }
+                                <time>@take.CreatedUtc.ToLocalTime().ToString("g")</time>
+                                <TakeSummary Take="take" Changes="TakeChanges(take)" />
+                                <div class="shots-actions"><button @onclick="() => ToggleSelectedTake(take)">@(SourceShot?.SelectedTakeId == take.Id ? "Deselect" : "Use this take")</button><button disabled="@(!CanRegenerate(take))" title="@TakeDisplay.RegenerationIssue(take)" @onclick="() => RegenerateTake(take)">Regenerate…</button><a class="take-download" href="@TakeUrl(take.Id)" download="@TakeDownloadName(take.Id)">Download MP4</a></div>
+                                <details><summary>Details</summary><p>@take.Snapshot.Settings.Model</p><p>@(take.HasLosslessFrames ? "MP4 + lossless frames" : "MP4") · @Bytes(take.Bytes)</p><p>Batch @take.RunId</p></details>
+                            </div>
+                        </article>
+                    }</div>
+                    @if (ShotTakes.Count == 0) { <p class="empty-takes">Your takes will appear here. Write or compose a prompt, then generate your first take.</p> }
+                    else if (visibleTakes.Count == 0) { <div class="empty-takes" role="status"><p>No takes match these filters.</p><button @onclick="ClearTakeFilters">Clear filters</button></div> }
+                </section>
+            }
+            else { <p>Choose a shot to prepare its production. <a href="@(ProjectLink(Id, "/shots"))">Plan shots</a></p> }
+        </ChildContent></StudioPane></Center>
+            <Right><StudioPane Class="shot-controls" Label="Production tools">
+                <Header>@if (Current is { } current && Selected is { } selected) {
+                    <div class="shot-setup-summary">
+                        <strong><button class="generation-preset-name" @ref="_setupSettingsButton" aria-label="Edit generation preset" @onclick="@(() => OpenSetupDialog("Settings"))">@current.Name</button></strong>
+                        @* The setup's settings and scope are in its help; the menu switches setups without opening the dialog. *@
+                        <span class="shot-setup-tools">
+                            <HelpHint Label="Generation setup" Text="@($"{H3Presets.Label(H3Presets.Key(selected))} · {PresetResolution} · {ActiveGlobalSetup?.Settings.TakeCount ?? 1} takes. Shared across shots and projects. Output changes in the footer stay with this shot.")" />
+                            <MudMenu Icon="@Icons.Material.Outlined.Edit" AriaLabel="Change generation setup" Size="Size.Small" Dense="true" Disabled="_setupBusy" Class="shot-setup-switch" AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight">
+                                @foreach (var setup in _globalSetups.Setups.Where(s => !s.Archived || s.Id == current.GenerationSetupId))
+                                {
+                                    var active = setup.Id == current.GenerationSetupId;
+                                    <MudMenuItem role="menuitemradio" aria-checked="@(active ? "true" : "false")" Icon="@(active ? Icons.Material.Outlined.Check : null)" OnClick="@(() => active ? Task.CompletedTask : SelectGlobalSetup(setup.Id))">@setup.Name@(setup.Archived ? " · Archived" : "")</MudMenuItem>
+                                }
+                                <MudDivider />
+                                <MudMenuItem role="menuitem" OnClick="@(() => OpenSetupDialog("Settings"))">Edit preset…</MudMenuItem>
+                            </MudMenu>
+                        </span>
+                        <div class="shot-setup-actions">
+                            <button @ref="_setupPromptButton" aria-label="Prompt" @onclick="@(() => OpenSetupDialog("Prompt"))">Prompt <small>@SetupPromptStatus</small></button>
+                        </div>
+                    </div>
+                }</Header>
+                <ChildContent>@if (Selected is { } shot) {
+                    <section class="shot-references"><h2 class="shot-references-title">References</h2>
+                        <button class="add-shot-references" @onclick="OpenReferencePicker">Manage references</button>
+                        <div class="shot-reference-counts"><span>Images <strong>@ResolvedReferences.For(shot).Pictures.Count/9</strong></span><span>Reels <strong>@shot.Videos.Count</strong></span><span>Audio <strong>@ReferenceVideos.AudioMappings(shot).Count()/3</strong></span></div>
+                        <div class="shot-reference-contact-sheet">
+                            @foreach (var picture in ResolvedReferences.For(shot).Pictures)
+                            {
+                                var image = picture.Image; var reel = picture.Reel;
+                                var url = image is not null ? ResolveImage(image).Url : picture.Keyframe is not null ? ReferenceVideos.FrameUrl(Id, picture.Keyframe.Frame) : null;
+                                var name = image?.Name ?? reel?.Name ?? "Unavailable image";
+                                var media = _assets.Assets.FirstOrDefault(a => a.Id == image?.AssetId)?.Images.FirstOrDefault(i => i.Id == image?.MediaId);
+                                <button class="shot-reference-tile" title="@($"Picture {picture.Number} · {name}")" aria-label="@($"Preview Picture {picture.Number} · {name}")" @onclick="() => PreviewPicture(picture.Number)">
+                                    @if (url is not null) { <CropThumbnail MeasureImage="@(media is null)" Url="@url" Label="@name" Width="@(media?.Width ?? reel?.Media.Width ?? 1)" Height="@(media?.Height ?? reel?.Media.Height ?? 1)" Crop="@(image?.Crop ?? picture.Keyframe?.Crop)" /> }
+                                    else { <span class="shot-reference-unavailable">Unavailable</span> }
+                                    <span class="shot-reference-number">@picture.Number</span>
+                                    <span class="shot-reference-name">@name</span>
+                                </button>
+                            }
+                            @foreach (var video in shot.Videos)
+                            {
+                                <button class="shot-reference-tile shot-reference-reel" @key="video.Id" title="@($"Reel · {video.Name} · {(video.EffectiveVisuals == ReelVisuals.None ? "Audio only" : ReelUsageDefaults.Label(video.EffectiveVisuals))}")" aria-label="@($"Preview reel {video.Name}")" @onclick="() => { _previewVideo = video; _videoPreviewOpen = true; }">
+                                    <CropThumbnail Url="@ReferenceVideos.ThumbnailUrl(Id, video.Media.Id)" Label="@video.Name" Width="video.Media.Width" Height="video.Media.Height" />
+                                    <span class="shot-reference-number" aria-hidden="true">▶</span>
+                                    <span class="shot-reference-name">@video.Name</span>
+                                </button>
+                            }
+                        </div>
+                        @if (shot.Images.Count + shot.Videos.Count + shot.Voices.Count == 0) { <p class="field-hint">Add images, reels or audio to guide this shot.</p> }
+                        @if (ReferenceRepairIssue is { } referenceIssue) { <p class="shot-reference-warning" role="status">@referenceIssue</p> }
+                        @if (shot.Images.Any(b => b.PreservationOverride is not null)) { <p class="field-hint">@shot.Images.Count(b => b.PreservationOverride is not null) images use custom guidance.</p> }
+                        <details class="shot-reference-details"><summary>Reference details and guidance</summary>
+                        <div class="shots-actions"><strong>Pictures · @ResolvedReferences.For(shot).Pictures.Count/9</strong></div>
+                        @foreach (var binding in shot.Images)
+                        {
+                            var resolved = ResolveImage(binding);
+                            <article class="shot-reference compact-reference " data-reference-id="@binding.Id" tabindex="-1" @key="binding.Id">
+                                @if (resolved.Url is not null && _assets.Assets.FirstOrDefault(a => a.Id == binding.AssetId)?.Images.FirstOrDefault(i => i.Id == binding.MediaId) is { } referenceImage) { <button class="reference-crop-preview" aria-label="Preview Picture @(shot.Images.IndexOf(binding) + 1)" @onclick="() => PreviewPicture(shot.Images.IndexOf(binding) + 1)"><CropThumbnail Url="@resolved.Url" Label="@binding.Name" Width="referenceImage.Width" Height="referenceImage.Height" Crop="binding.Crop" /></button> }
+                                <div class="reference-row-content"><strong>Picture @(shot.Images.IndexOf(binding) + 1) · @binding.Name</strong><small>@binding.AiUseHint · @(binding.Crop is null ? "Full image" : "Cropped")</small>@if (ReferenceSetups.IsAnchor(binding)) { <span class="frame-anchor-badge">@ReferenceSetups.UseLabel(binding.Use!.Value)</span> }
+                                    <small>@GuidanceSummary(binding)</small>
+                                    @if (resolved.TrashId is { } trashId) { <p>In Trash · @resolved.Remaining <button @onclick="() => RestoreReference(binding, trashId)">Restore reference</button></p> }
+                                    @if (resolved.Url is null || _missing.Contains(binding.Id)) { <p role="status">Image unavailable. Restore or replace it before generating.</p> }
+                                </div>
+                            </article>
+                        }
+                        <button class="reference-refresh" @onclick="RefreshDefaults">Refresh Assets</button>
+                        <div class="shots-actions"><strong>Reels · @shot.Videos.Count/3</strong></div>
+                        @foreach (var video in shot.Videos) {
+                            var index = shot.Videos.IndexOf(video); var audio = ReferenceVideos.SoundtrackNumber(shot, index);
+                            <article class="shot-reference compact-reference"><div class="reference-row-content">
+                                <button aria-label="Preview reel @video.Name" @onclick="() => { _previewVideo = video; _videoPreviewOpen = true; }">▶ @video.Name</button>
+                                <small>@ResolvedReferences.For(shot).Label(video)</small>
+                                <small>@video.Media.Duration.ToString("0.###") s · @(audio is null ? "Visual reference only" : $"Audio {audio} · {video.Speaker ?? "Soundtrack"}")</small>
+                                @if (video.EffectiveVisuals == ReelVisuals.Keyframes) {
+                                    <div class="shots-actions">@foreach (var picture in ResolvedReferences.For(shot).Pictures.Where(p => p.Reel == video)) {
+                                        <button class="reference-crop-preview" aria-label="Preview Picture @picture.Number" @onclick="() => PreviewPicture(picture.Number)"><CropThumbnail MeasureImage="true" Url="@ReferenceVideos.FrameUrl(Id, picture.Keyframe!.Frame)" Label="@($"Picture {picture.Number}")" Width="video.Media.Width" Height="video.Media.Height" Crop="picture.Keyframe.Crop" /></button>
+                                    }</div>
+                                }
+                                <small>@(video.EffectiveVisuals switch { ReelVisuals.Keyframes => "Selected keyframes", ReelVisuals.RefMod => "Selected-keyframe RefMod · Experimental", ReelVisuals.None => "Audio only", _ => "Full reel" }) · Copied use guidance</small>
+                                @if (video.EffectiveVisuals == ReelVisuals.RefMod) { <small>@ReelRefMods.Summary(video)</small> }
+                                @if (video.EffectiveVisuals == ReelVisuals.FullReel && video.Media.Duration - ReferenceVideos.EffectiveSeconds(video.Media, shot) > .001) { <small>H3 uses first @ReferenceVideos.EffectiveSeconds(video.Media, shot).ToString("0.###") s</small> }
+                            </div></article>
+                        }
+                        <div class="shots-actions"><strong>Voices · @ReferenceVideos.AudioMappings(shot).Count()/3 audio inputs</strong></div>
+                        <button @onclick="OpenReferencePicker">Manage character voices</button>
+                        @foreach (var choice in shot.CharacterVoices ?? []) { <p class="field-hint">@choice.CharacterName · Voice: @CharacterVoices.Label(choice)</p> }
+                        @foreach (var voice in shot.Voices)
+                        {
+                            var available = _assets.Voices.FirstOrDefault(v => v.Id == voice.VoiceId); var trashed = _assets.VoiceTrash.FirstOrDefault(v => v.Voice.Id == voice.VoiceId);
+                            <article class="shot-voice compact-voice" @key="voice.VoiceId"><strong>Audio @ReferenceVideos.VoiceNumber(shot, shot.Voices.IndexOf(voice)) · @voice.Speaker · @(available?.Name ?? trashed?.Voice.Name ?? "Unavailable voice")</strong><small>@voice.Start.ToString("0.##")–@((voice.Start + voice.Duration).ToString("0.##")) s · voice identity</small>
+                                @if (available is null) { <p>Voice missing or in Trash. @if (trashed is not null) { <button @onclick="() => RestoreVoice(trashed.Id)">Restore voice</button> }</p> }
+                                <div class="shots-actions"><button @onclick="OpenReferencePicker">Edit voice</button></div>
+                            </article>
+                        }
+                        <a href="@(ProjectLink(Id, "/assets?view=voices"))">Manage voice recordings in Assets</a>
+                        </details>
+                    </section>
+                }</ChildContent>
+                <Footer>@if (Selected is { } shot) {
+                    <fieldset @key="Current?.Id" class="generation-output" disabled="@(_starting || _setupBusy || _selectingShot)" aria-label="Generation output">
+                        <label>Resolution<select aria-label="Resolution" value="@(shot.UpscalePreview ? "upscaled" : VideoResolutions.Key(VideoResolutions.Selected(shot)))" @onchange="ChangeOutputResolution">@foreach (var resolution in VideoResolutions.Choices) { <option value="@VideoResolutions.Key(resolution)">@VideoResolutions.Option(EffectiveAspect(shot), resolution)</option> }<option value="upscaled">Upscaled preview</option></select></label>
+                        <div class="generation-output-row">
+                            <label>Takes<select aria-label="Takes" @bind:get="Current!.TakeCount" @bind:set="ChangeOutputTakes">@for (var i = 1; i <= 4; i++) { <option>@i</option> }</select></label>
+                            <label>Aspect<select aria-label="Shot aspect" value="@(shot.AspectOverride ?? "")" @onchange="e => Edit(s => s.AspectOverride = string.IsNullOrWhiteSpace(Text(e)) ? null : Text(e))"><option value="">Project · @_project!.VideoAspect</option><option value="16:9">16:9</option><option value="9:16">9:16</option><option value="1:1">1:1</option></select></label>
+                        </div>
+                        @if (Current?.OutputOverrides is not null) { <div class="output-override-note"><span>This shot</span><button @onclick="ResetOutput">Use preset defaults</button></div> }
+                        @if (SceneAspectOthers(shot) is { Count: > 0 } others) { <details class="output-aspect-options"><summary>Aspect options</summary><button class="shot-aspect-scene" @onclick="() => ApplyAspectToScene(others)">@SceneAspectAction(shot, others.Count)</button></details> }
+                    </fieldset>
+                    @if (GenerationIssue is { } issue) { <p role="status">@issue <button @onclick="ReviewGenerationIssue">@GenerationIssueAction</button></p> }
+                    var activeVideo = ActiveVideoJob;
+                    var videoAttention = VideoAttention;
+                    var batchJob = activeVideo ?? videoAttention;
+                    <div class="shot-generation-footer" @ref="_videoOriginElement">
+                        @if (activeVideo is not null)
+                        {
+                            <AiJobProgressView Job="activeVideo" Queue="AiJobs.View" Progress="@(AiJobs.Progress(activeVideo.Id) ?? _videoProgress.GetValueOrDefault(activeVideo.Id))" VideoCandidates="VideoCandidates(activeVideo)" />
+                        }
+                        else
+                        {
+                            <div class="shot-generate-actions">
+                                @if (_videoEnqueues.ContainsKey(shot.Id)) { <MudButton Disabled="@_starting" OnClick="RetryVideoEnqueue" Color="Color.Primary" Variant="Variant.Outlined">Retry saved enqueue</MudButton> }
+                                else { <MudButton OnClick="Generate" Disabled="@(_starting || GenerationIssue is not null)" Color="Color.Primary" Variant="Variant.Filled">Generate takes</MudButton> }
+                                @if (batchJob is null && _runs.Any(r => RunBelongsToShot(r, shot.Id))) { <MudButton id="review-latest-takes" Class="shot-review-latest" OnClick="OpenLatestReview" Color="Color.Primary" Size="Size.Small" aria-label="Review latest batch" title="Review latest batch">Review</MudButton> }
+                            </div>
+                        }
+                        @if (batchJob is not null)
+                        {
+                            <div class="@(videoAttention?.Id == batchJob.Id ? "shot-job-banner" : null)">
+                                @if (videoAttention?.Id == batchJob.Id) { <p class="field-error" role="status">@videoAttention.Error</p> }
+                                <div class="shot-batch-actions">
+                                    <MudButton id="review-latest-takes" OnClick="OpenLatestReview" Color="Color.Primary" Variant="Variant.Outlined">View batch</MudButton>
+                                    <MudButton OnClick="() => CancelGeneration(batchJob.Id)" StartIcon="@Icons.Material.Outlined.StopCircle" aria-label="Cancel generation" title="Cancel remaining takes; saved takes are kept">Cancel</MudButton>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                }
+                </Footer>
+            </StudioPane></Right>
+    </StudioWorkspace>
+    }
+}
+
+<InlineDialog Visible="_setupDialogOpen" VisibleChanged="SetupDialogVisibility" Options="@(LargeDialog with { MaxWidth = MaxWidth.Large, CloseOnEscapeKey = false })" Class="shot-setup-dialog" DefaultFocus="DefaultFocus.FirstChild"
+              Title="Prompt and preset" Context="@SourceShot?.Title" CloseLabel="Close prompt and preset">
+    <DialogContent>
+        <DialogEscape Pressed="CloseSetupDialog" />
+        @if (Current is { } composition && Selected is { } shot && _project is not null) {
+            @if (_error is not null) { <div role="alert"><p>@_error</p>@if (_saveFailed) { <button @onclick="Reload">Reload saved version</button><button @onclick="DownloadDraft">Download unsaved copy</button> }</div> }
+            <div class="setup-dialog-tabs" role="tablist" aria-label="Generation setup">
+                <button @ref="_setupPromptTab" id="shot-setup-prompt-tab" type="button" role="tab" aria-selected="@(_setupTab == "Prompt" ? "true" : "false")" tabindex="@(_setupTab == "Prompt" ? 0 : -1)" aria-controls="shot-setup-prompt-panel" @onclick="@(() => SetSetupTab("Prompt"))" @onkeydown="SetupTabKeyDown">Prompt</button>
+                <button @ref="_setupSettingsTab" id="shot-setup-settings-tab" type="button" role="tab" aria-selected="@(_setupTab == "Settings" ? "true" : "false")" tabindex="@(_setupTab == "Settings" ? 0 : -1)" aria-controls="shot-setup-settings-panel" @onclick="@(() => SetSetupTab("Settings"))" @onkeydown="SetupTabKeyDown">Preset</button>
+            </div>
+                <section id="shot-setup-prompt-panel" data-setup-id="@composition.Id" role="tabpanel" aria-labelledby="shot-setup-prompt-tab" hidden="@(_setupTab != "Prompt")">
+                    <div class="prompt-review-guidance" role="status">
+                        @if (PromptNeedsReview) {
+                            <p>Check the prompt against your shot and reference labels, then choose <strong>Mark reviewed</strong>.</p>
+                            @if (CurrentPromptReferenceCheck is { NeedsAttention: true } referenceCheck) { <p class="field-hint">@referenceCheck.Detail</p> }
+                            @if (SourceChanged) { <p class="field-hint">The shot direction changed. Check that the text matches the current shot.</p> }
+                        }
+                        else { <p>Prompt reviewed against the current shot and references.</p> }
+                    </div>
+                    @if (ShotPreparationIssue is { } preparation) {
+                        <div class="prompt-shot-preparation"><span>@preparation You can review the prompt now.</span><button @onclick="CompleteShotDetails">@ShotPreparationAction</button></div>
+                    }
+
+                    @if (CompositionJob is { } job) {
+                            @if (job.CanRetryCaptured) { <button disabled="@_compositionBusy" @onclick="() => RetryComposition(job.Id)">Retry composition request</button> }
+                            else if (job is { State: AiJobState.NeedsAttention, Recovery: AiJobRecovery.GenerateAgain, RemoteUnconfirmed: false }) {
+                                @if (_compositionRecovery is { } recovery)
+                                {
+                                    @if (recovery.Sections.Count > 0)
+                                    {
+                                        <p>The AI response is saved but is missing its final sound sections. Recover its visual text with these saved shot settings, then review the draft. No new AI request is needed.</p>
+                                        <details class="composition-sound-recovery" open><summary>Sound sections to restore</summary><pre class="shot-source">@recovery.AddedText</pre></details>
+                                    }
+                                    else { <p>Recover the saved response unchanged as an editable draft. Review notes do not prevent you from accepting it. No new AI request is needed.</p> }
+                                    @foreach (var note in recovery.Result.Notes) { <p class="field-hint" role="status">Review note: @note</p> }
+                                    <button disabled="@_compositionBusy" @onclick="RecoverCompositionResponse">Recover response as draft</button>
+                                }
+                                else { <p>This composition request stopped. Open a new request to compose again with your current direction and references.</p> }
+                                <button disabled="@_compositionBusy" @onclick="NewCompositionRequest">New composition request</button>
+                            }
+                    }
+                    @if (_compositionError is not null) { <p role="alert">@_compositionError</p> }
+                    @if (_compositionResult is null && !string.IsNullOrEmpty(_compositionRaw)) { <details><summary>Inspect AI response</summary><pre class="shot-source">@_compositionRaw</pre></details> }
+                    @if (CompositionPromptWarning is { } warning) { <p class="field-hint" role="status">Review note: @warning You can keep this text; this does not block saving or generation.</p> }
+                    <PromptEditor @ref="_promptEditor" @key="composition.ShotId" HistoryKey="@($"{_promptHistoryScope}:{composition.ShotId}")" Text="@composition.Prompt" TextChanged="text => PromptChanged(composition.ShotId, text)" PictureClicked="PreviewPicture" VideoClicked="PreviewVideo"><ToolbarActions>
+                    <div @ref="_compositionReviewOrigin"><TextAssistance Request="CompositionPresentation" Preparing="@(_compositionBusy && _compositionDialogJob is null)" HasError="@(_compositionEnqueue is not null)" ReviewRequested="InspectComposition" CancelRequested="CancelComposition" @ref="_compositionAssist" @key="(composition.ShotId, nameof(TextAssistance))" ProjectId="Id" Studio="TextAssistantStudio.Production" Title="Prompt assistance" SelectionChanged="value => _compositionModel = value" ModelLocked="@(_compositionBusy || CompositionJob?.LocksTarget == true)">
+                        <ExtraActions><button disabled="@(!CanClearPrompt)" title="Clear the prompt. References, settings, and Direction for AI stay." @onclick="ClearPrompt">Clear prompt</button></ExtraActions>
+                        <ChildContent><p class="field-hint">@shot.Title</p>                    <label>Direction for AI<textarea rows="2" maxlength="20000" placeholder="For example: stay closer on her face, then reveal the monitor." @bind:get="composition.DirectingNotes" @bind:set="value => EditComposition(c => c.DirectingNotes = value ?? string.Empty)" @bind:event="oninput"></textarea></label>
+<label class="check-row"><input type="checkbox" @bind="_inspectCompositionImages" disabled="@(_compositionBusy || CompositionJob?.LocksTarget == true || _compositionEnqueue is not null)" />Send reference images to the prompt-writing model</label>
+<p class="field-hint">Saved visual descriptions are included when available. Turn image sending off to use a text-only model; all visual references then need saved descriptions. This affects only prompt assistance, not the references sent to video generation.</p>
+@if (CompositionDescriptionIssue is { } descriptionIssue) { <p role="status">@descriptionIssue</p> }
+@if (_inspectCompositionImages && (ResolvedReferences.For(shot).Pictures.Count > 0 || ReelRefMods.Uses(shot)) && _compositionModel is { SupportsImages: false }) { <p role="status">Choose a vision model, or turn off image sending and use saved descriptions.</p> }@if (_compositionError is not null) { <p role="alert">@_compositionError</p> }</ChildContent>
+                        <Actions><MudButton Class="ai-assist-action" @ref="_composeButton" OnClick="ComposePrompt" Disabled="@(!CanCompose)" Variant="Variant.Filled" Color="Color.Primary"><AiAssistIcon />@(string.IsNullOrWhiteSpace(composition.Prompt) ? "Compose prompt" : "Revise with AI")</MudButton>@if (_compositionEnqueue is not null) { <button @onclick="RetryCompositionEnqueue">Retry saved request</button> }</Actions>
+                    </TextAssistance></div>
+                    </ToolbarActions></PromptEditor>
+                    @if (!string.IsNullOrWhiteSpace(composition.Prompt) && PromptReviewIssue is { } issue) { <p class="prompt-validation" role="alert">@issue</p> }
+                    @if (!string.IsNullOrWhiteSpace(composition.ReferenceUsage)) { <details><summary>AI explanation</summary>@if (composition.Accepted?.Prompt != composition.Prompt) { <p class="field-hint">Explanation from the last AI composition, before your manual edits.</p> }<p>@composition.ReferenceUsage</p></details> }
+                    <button @onclick="CopyPrompt">Copy prompt</button>
+                    @if (EarlierShotContent.Any()) {
+                        <details class="earlier-setup-content"><summary>Earlier setup prompts and references</summary>
+                            <p class="field-hint">These versions were preserved when prompts and references moved to the shot. Restoring one keeps your generation settings.</p>
+                            @foreach (var earlier in EarlierShotContent) {
+                                <details><summary>@earlier.SetupName</summary><pre class="shot-source">@earlier.Content.Prompt</pre>
+                                    <p class="field-hint">@earlier.Content.Images.Count images · @earlier.Content.Videos.Count reels · @earlier.Content.Voices.Count voices</p>
+                                    <button disabled="@(_compositionBusy || CompositionJob?.LocksTarget == true)" @onclick="() => RestoreEarlierShotContent(earlier)">Use this prompt and references</button>
+                                </details>
+                            }
+                        </details>
+                    }
+                </section>
+
+                    <section id="shot-setup-settings-panel" role="tabpanel" aria-labelledby="shot-setup-settings-tab" hidden="@(_setupTab != "Settings")">
+            @if (_error is not null) { <p role="alert">@_error</p> }
+            <fieldset class="global-setup-fields" disabled="@_setupBusy" aria-busy="@(_setupBusy ? "true" : "false")">
+            <div class="setup-toolbar">
+                <label>Global setup<select aria-label="Named setup" value="@composition.GenerationSetupId" @onchange="ChangeSetup">@foreach (var setup in _globalSetups.Setups.Where(c => !c.Archived || _showArchived)) { <option value="@setup.Id">@setup.Name @(setup.Archived ? "· Archived" : "")</option> }</select></label>
+                <details class="setup-menu"><summary>Setup options</summary><div><label>Setup name<input maxlength="200" @bind:get="composition.Name" @bind:set="v => EditComposition(c => c.Name = v ?? string.Empty)" @bind:event="oninput" /></label><div class="shots-actions"><button @onclick="NewComposition">New setup</button><button @onclick="DuplicateComposition">Duplicate setup</button><button @onclick="ArchiveComposition">@(ActiveGlobalSetup?.Archived == true ? "Restore setup" : "Archive setup")</button></div><label class="check-row"><input type="checkbox" @bind="_showArchived" />Show archived</label></div></details>
+            </div>
+            <p class="field-hint">Shared across all shots and projects. Changes update this setup for future generations. Prompts and references stay with each shot; saved takes keep their original settings.</p>
+<button @onclick="CheckVideo">Check video models</button>                    <section class="shot-generation"><h3>Preset settings</h3><label>Generation preset<select aria-label="Generation preset" value="@H3Presets.Key(shot)" @onchange="ChangeQuality">@foreach (var key in H3Presets.Keys) { <option value="@key">@H3Presets.Label(key)@(H3Presets.Experimental(key) ? " · Experimental" : "")</option> }</select></label>
+                        <p class="field-hint">@H3Presets.Help(H3Presets.Key(shot))</p>
+                        @if (H3Presets.Key(shot) == H3HyperFlow.Key) { <details><summary>Fixed HyperFlow schedule</summary><p>Experimental conversion; not part of the earlier preset benchmark. Eight Euler evaluations, shifts 12/3, BasicGuider, strength 1.</p><code>@H3HyperFlow.VideoSigmas</code></details> }
+                        else if (H3Presets.Compared(H3Presets.Key(shot))) { <details><summary>Comparison limits</summary><p>Compared on the base Ref2VA model at Upscaled preview, 141 frames, on one 20 GiB GPU. Finetunes such as Singularity were not compared. Other sizes, GPUs, durations and extra character/style LoRAs remain unverified.</p></details> }
+                        <a href="@(AiSettingsNavigation.Link(Navigation, "video", Id, "shots"))">Preset setup and video models</a>
+
+                        @if (_loraSettings is { } loraSettings)
+                        {
+                            <LoraPicker @key="Current!.Id" Settings="loraSettings" Workflow="LoraWorkflow.MiniMaxH3Ref2VA" Selections="H3Loras.Selections(shot)"
+                                Check="_loraCheck" Visibility="_loraVisibility" Disabled="LorasLocked" Changed="ChangeLoras" Refresh="RefreshH3LorasAsync"
+                                InsertTrigger="InsertLoraTrigger" TriggerButtonText="Insert trigger into directing notes"
+                                ValidityChanged="valid => _loraValidity[Current!.Id] = valid"
+                                ManageUrl="@(AiSettingsNavigation.Link(Navigation, "loras", Id, "shots"))" ProjectSettingsUrl="@(ProjectLink(Id, "/settings"))" />
+                        }
+                        @if (_loraError is not null) { <p role="alert">@_loraError</p> }
+                        <details><summary>Advanced</summary><label>Seed (optional)<input type="number" min="0" @bind:get="Current!.Seed" @bind:set="value => EditComposition(c => c.Seed = value)" /></label>@if (H3Presets.Key(shot) is "turbo8" or "pdd") { <p class="field-hint">Euler · video shift 12 · audio shift 3 · LoRA strength 1</p> }</details>
+                        <label>Default resolution<select aria-label="Default resolution" value="@PresetResolution" @onchange="ChangeDefaultResolution">@foreach (var resolution in VideoResolutions.Choices) { <option value="@VideoResolutions.Key(resolution)">@VideoResolutions.Option(EffectiveAspect(shot), resolution)</option> }<option value="upscaled">Upscaled preview</option></select></label>
+                        <p class="field-hint">Explore a few takes at Quick or Preview, then regenerate your favorite at Detail or Native with its seed retained.</p>
+                        <label class="check-row"><input type="checkbox" checked="@shot.SaveLosslessFrames" @onchange="e => Edit(s => s.SaveLosslessFrames = e.Value is true)" />Save lossless frames</label>
+                        <p class="field-hint">Optional: adds encoding time and storage. Without it, you can still save frames from the compressed MP4.</p>
+                        @if (shot.UpscalePreview)
+                        {
+                            <p class="field-hint">@H3Policy.Size(EffectiveAspect(shot), false).Width × @H3Policy.Size(EffectiveAspect(shot), false).Height sampling → @H3Policy.Size(EffectiveAspect(shot), true).Width × @H3Policy.Size(EffectiveAspect(shot), true).Height output · @(shot.SaveLosslessFrames ? "MP4 + lossless WebP archive" : "MP4")</p>
+                            <p class="field-hint">Larger output with preview sampling. Upscaling, decoding and saving add time; fine detail is softer than native generation.</p>
+                        }
+                        else { <p class="field-hint">@VideoResolutions.Size(EffectiveAspect(shot), VideoResolutions.Selected(shot)).Width × @VideoResolutions.Size(EffectiveAspect(shot), VideoResolutions.Selected(shot)).Height · @(shot.SaveLosslessFrames ? "MP4 + lossless WebP archive" : "MP4")</p> }
+                        @if (_configuration?.PreviewUpscaling.Issue is { } upscalingIssue)
+                        { <p class="field-hint" role="@(shot.UpscalePreview ? "alert" : null)">Upscaled preview: @upscalingIssue <a href="@(AiSettingsNavigation.Link(Navigation, "video", Id, "shots"))">Set up preview upscaling</a></p> }
+                        <div class="shot-inline-fields"><label>Default takes<select aria-label="Default takes" value="@(ActiveGlobalSetup?.Settings.TakeCount ?? 1)" @onchange="e => ChangeDefaultTakes(int.Parse(Text(e)))">@for (var i = 1; i <= 4; i++) { <option>@i</option> }</select></label></div>
+                        @if (Current?.OutputOverrides is not null) {
+                            <p class="field-hint">This shot uses its own output choices. The defaults above apply to shots without overrides.</p>
+                            <button @onclick="SaveOutputDefaults">Save output as preset defaults</button>
+                        }
+                        @if (_configuration is not null) {
+                            <p class="field-hint">@(_configuration.Ready(shot) ? H3Policy.QualityLabel(shot) + " · Ready" : "Selected configuration needs attention")</p>
+                            <details><summary>Setup details</summary><p>@_configuration.Issue(shot)</p><p>@(shot.UpscalePreview ? "Upscaled previews save no later-refinement data." : _configuration.PackageCaptureReady ? "Refinement data will be saved with new takes." : "Optional companion nodes add refinement data. Normal generation works without them.")</p></details><button disabled="@_starting" @onclick="CheckVideo">Refresh readiness</button>
+                        }
+
+
+                    </section>
+            </fieldset>
+</section>
+
+        }
+    </DialogContent>
+    <DialogActions>
+        <span role="status">@_saveStatus</span>
+        <MudButton OnClick="UndoEdit" Disabled="@(_undo.Count == 0 || _setupBusy)">Undo</MudButton>
+        <MudButton OnClick="CloseSetupDialog" Disabled="@(_compositionBusy || _closingSetupDialog || _setupBusy)" Variant="Variant.Outlined">Done</MudButton>
+        @if (_setupTab == "Prompt") { <MudButton OnClick="AcceptPrompt" Disabled="@(!CanAcceptPrompt)" Variant="Variant.Filled" Color="Color.Primary" title="Mark the current prompt reviewed as written, including any review notes.">Mark reviewed</MudButton> }
+    </DialogActions>
+</InlineDialog>
+
+<InlineDialog Visible="_bulkGenerateOpen" VisibleChanged="BulkGenerateVisibility" Options="@(LargeDialog with { MaxWidth = MaxWidth.Large, CloseOnEscapeKey = !BulkGenerateLocked })" Class="bulk-generate-dialog shot-bulk-dialog"
+              Title="Generate takes" CloseLabel="Close generate takes" CloseDisabled="BulkGenerateLocked">
+    <Summary>Choose shots and generate a new batch with shared settings.</Summary>
+    <DialogContent>
+        <div class="shot-bulk-layout">
+            @if (_bulkGenerateOpen) {
+                <ShotPicker Items="BulkPickerItems" SelectedIds="_bulkGenerateSelected" SelectedIdsChanged="SetBulkSelection" Disabled="BulkGenerateLocked">
+                    <ItemDetail Context="item"><PromptReferenceBadge Check="PromptReferenceCheckFor(item.Id)" /></ItemDetail>
+                </ShotPicker>
+            }
+            <aside class="shot-bulk-settings" aria-label="Batch settings">
+                <h3>Batch settings</h3>
+                <label>Preset<select aria-label="Bulk generate preset" disabled="@BulkGenerateLocked" @bind="_bulkGeneratePreset">@foreach (var key in H3Presets.Keys) { <option value="@key">@H3Presets.Label(key)</option> }</select></label>
+                <label>Resolution<select aria-label="Bulk generate resolution" disabled="@BulkGenerateLocked" @bind="_bulkGenerateResolution">
+                    <option value="current">Each shot's own resolution</option>
+                    @foreach (var resolution in VideoResolutions.Choices) { <option value="@VideoResolutions.Key(resolution)">@VideoResolutions.Label(resolution)</option> }
+                    <option value="upscaled">Upscaled preview</option>
+                </select></label>
+                <label>Takes per shot<select aria-label="Bulk generate take count" disabled="@BulkGenerateLocked" @bind="_bulkGenerateTakeCount">@for (var takeCount = 1; takeCount <= 4; takeCount++) { <option value="@takeCount">@takeCount</option> }</select></label>
+                <p class="shot-bulk-note">Each shot uses its own prompt, references and voices. Saved generation settings stay unchanged.</p>
+                <div class="shot-bulk-summary"><strong>@Counted(BulkGenerateSelectedCount * _bulkGenerateTakeCount, "new take")</strong><span>across @Counted(BulkGenerateSelectedCount, "shot")</span></div>
+            </aside>
+        </div>
+    </DialogContent>
+    <Status>
+        <span class="shot-bulk-count">@Counted(BulkGenerateSelectedCount, "shot") selected</span>
+        <div class="shot-bulk-feedback">@if (!string.IsNullOrWhiteSpace(_bulkGenerateError)) { <p role="alert">@_bulkGenerateError</p> }@if (!string.IsNullOrWhiteSpace(_bulkGenerateMessage)) { <p role="status">@_bulkGenerateMessage</p> }</div>
+    </Status>
+    <Actions><MudButton OnClick="CloseBulkGenerate" Disabled="@BulkGenerateLocked">Close</MudButton><MudButton OnClick="QueueBulkGenerateAsync" Color="Color.Primary" Variant="Variant.Filled" Disabled="@(_bulkGenerateBusy || BulkGenerateSelectedCount == 0)">@(_bulkGenerateBusy ? "Queueing…" : $"Queue selected ({BulkGenerateSelectedCount})")</MudButton></Actions>
+</InlineDialog>
+
+<InlineDialog @bind-Visible="_videoPreviewOpen" Options="@(LargeDialog with { MaxWidth = MaxWidth.Medium })" Title="@(_previewVideo?.Name ?? "Reference video")" Context="Reference video" CloseLabel="Close video preview">
+    <DialogContent>@if (_videoPreviewOpen && _previewVideo is { } v) {
+        <video controls preload="metadata" style="width:100%;max-height:65vh" src="@ReferenceVideos.Url(Id, v.Media.Id)" aria-label="Reference video playback"></video>
+        <p>@v.Description</p><p class="field-hint">Author-provided description · @(v.UseSoundtrack ? "Soundtrack enabled for generation" : "Soundtrack excluded from generation")</p>
+    }</DialogContent><DialogActions><MudButton OnClick="() => _videoPreviewOpen = false">Close</MudButton></DialogActions>
+</InlineDialog>
+<InlineDialog Visible="_referenceOpen" VisibleChanged="ImageEditorVisibility" Options="@(LargeDialog with { CloseOnEscapeKey = !_imageEditorSaving })" Class="manual-reference-dialog shot-reference-dialog"
+              Title="Manage references" Context="@_imageEditorShot?.Title" CloseLabel="Close manage references" CloseDisabled="_imageEditorSaving">
+    <DialogContent>@if (_referenceOpen && _imageEditorShot is not null) {
+        <ShotReferenceEditor Shot="_imageEditorShot" Library="_imageEditorAssets" RestoreTrashedImage="RestoreEditorImage" AssistPicking="true" ReferencePrompt="@(Current?.Prompt ?? "")" ReferenceDirectingNotes="@(Current?.DirectingNotes ?? "")" RequestedAssetPickJobId="RequestedJobId" AllowInference="true" AllowReels="true" Expanded="_imageEditorExpanded" CopySources="@ReferenceCopySources.Select(s => s.Composition.Shot).ToArray()" PreviousCopySource="@PreviousReferenceSource?.Composition.Shot" ReferencesApplied="ApplyReferences" ImageSaved="result => { _assets = result.Library; _imageEditorAssets = result.Library; }" Cancelled="() => _referenceOpen = false" />
+    }</DialogContent>
+</InlineDialog>
+
+<InlineDialog Visible="_voiceDetailsOpen" VisibleChanged="v => _voiceDetailsOpen = v" Options="LargeDialog" Class="shot-voice-dialog" Title="Edit voice reference" Context="@_referenceShot?.Title" CloseLabel="Close edit voice reference"><DialogContent>@if (_voiceDraft is { } draft && _referenceShot is { } captured) {
+        var recording = _assets.Voices.FirstOrDefault(v => v.Id == draft.VoiceId);
+        var trashed = _assets.VoiceTrash.FirstOrDefault(v => v.Voice.Id == draft.VoiceId && !v.Purging);
+        <p>@(recording?.Name ?? trashed?.Voice.Name ?? "Unavailable voice") · @captured.Title</p>
+        <label>Speaker<select aria-label="Speaker" @bind="draft.Speaker">@foreach (var speaker in captured.Dialogue.Select(d => d.Speaker).Append(draft.Speaker).Distinct()) { <option>@speaker</option> }</select></label>
+        @if (recording is not null || trashed is not null) { <audio data-excerpt-start="@Invariant(draft.Start)" data-excerpt-end="@Invariant(draft.Start + draft.Duration)" controls preload="none" src="@(recording is not null ? $"/media/projects/{Id}/voices/{draft.VoiceId}" : $"/media/production-trash/{Id}/Voice/{trashed!.Id}")"></audio> }
+        <p class="field-hint">Choose 1–15 seconds to guide voice identity. Its words are not copied into dialogue.</p>
+        <div class="shot-inline-fields"><label>Start<input type="number" min="0" step="0.01" @bind="draft.Start" /></label><label>Seconds<input type="number" min="1" max="15" step="0.01" @bind="draft.Duration" /></label></div>
+        @if (_referenceDetailsError is not null) { <p role="alert">@_referenceDetailsError</p> }
+    }</DialogContent><DialogActions><MudButton Disabled="_applyingReference" OnClick="() => _voiceDetailsOpen = false">Cancel</MudButton><MudButton Disabled="_applyingReference" OnClick="ApplyVoiceDetails" Variant="Variant.Filled" Color="Color.Primary">Apply</MudButton></DialogActions>
+</InlineDialog>
+
+<InlineDialog Visible="@(_compositionDialogJob is not null)" VisibleChanged="CompositionReviewVisibility" Options="LargeDialog" Class="prompt-review-dialog" DefaultFocus="DefaultFocus.FirstChild"
+              Title="Review prompt changes" Context="@($"{SourceShot?.Title} · {Current?.Name}")" CloseLabel="Close review prompt changes">
+    <DialogContent>
+        <DialogEscape Pressed="CloseCompositionReview" />
+        @if (_compositionResult is { } proposed && Current is { } composition) {
+            <AiResultAcknowledgement Observed="@(CompositionJob is { } observed ? new[] { observed } : [])" />
+            <p class="field-hint">Your current prompt stays unchanged until you apply these changes.</p>
+            @if (_compositionApplyError is not null || _compositionError is not null || _error is not null) { <MudAlert Severity="Severity.Error" Dense="true"><span role="alert">@(_compositionApplyError ?? _compositionError ?? _error)</span></MudAlert> }
+            <PromptComparisonView Before="@composition.Prompt" After="@proposed.Prompt" />
+            @if (proposed.Notes.Count > 0) {
+                <details class="composition-notes"><summary>Prompt review notes · @proposed.Notes.Count</summary><p>These notes do not prevent applying the prompt.</p>
+                    @foreach (var note in proposed.Notes) { <p>@note</p> }
+                </details>
+            }
+            @if (!string.IsNullOrWhiteSpace(proposed.ReferenceUsage)) { <details><summary>AI explanation</summary><p>@proposed.ReferenceUsage</p></details> }
+        }
+    </DialogContent>
+    <DialogActions>@if (_compositionResult is not null && Current is not null && _compositionChanged is not null && _compositionApplyError is null) { <AssistedApplyWarning Changed="_compositionChanged" Consequence="Applying can be undone." /> }<MudButton OnClick="CloseCompositionReview" Disabled="_compositionBusy">Close</MudButton><MudButton OnClick="DiscardCompositionResult" Disabled="_compositionBusy">Discard</MudButton><MudButton OnClick="ApplyCompositionResult" Disabled="@(_compositionBusy || _compositionResult is null)" Variant="Variant.Filled" Color="Color.Primary">@(_compositionChanged is null ? "Apply changes" : AssistedApplyWarning.ApplyAnyway)</MudButton></DialogActions>
+</InlineDialog>
+
+<InlineDialog Visible="_reviewOpen" VisibleChanged="ReviewVisibility" Options="LargeDialog" Class="shot-review-dialog" DefaultFocus="DefaultFocus.FirstChild"
+              Title="@(_reviewRun?.Snapshot.Shot.Title ?? "Video takes")" Context="@(_reviewRun is { } titled ? $"Take review · Batch {titled.Id.ToString()[..8]}" : "Take review")" CloseLabel="Close take review"><DialogContent>
+<DialogEscape Pressed="() => ReviewVisibility(false)" />
+<lumibelle.Components.AI.AiResultAcknowledgement Observed="@(_observedVideoJobs.Where(j => _reviewRun is not null && (j.Batch?.RootId == _reviewRun.Id || j.Id == _refinementJob)).ToArray())" MediaByJob="@(_observedVideoJobs.ToDictionary(j => j.Id, j => (j.Batch?.Candidates ?? []).Where(c => _doc.Takes.Any(t => t.Id == c.Id)).Select(c => c.Id).ToArray()))" />
+    @if (_reviewRun is { } review)
+    {
+        <p role="status">@review.Status</p>
+        @if (ReviewVideoJob is { } videoJob)
+        {
+            <AiJobProgressView Job="videoJob" Queue="AiJobs.View" Progress="@(AiJobs.Progress(videoJob.Id) ?? _videoProgress.GetValueOrDefault(videoJob.Id))" VideoCandidates="VideoCandidates(videoJob)" />
+            @if (videoJob.LocksTarget) { <button @onclick="() => CancelGeneration(videoJob.Id)">Cancel remaining takes</button> }
+            @if (videoJob.CanRecoverCancelledOutputs) { <button @onclick="() => RecoverVideoOutputs(videoJob.Id)">Recover completed takes</button> }
+        }
+        <div class="shot-review-layout">
+            <div>
+                @if (ReviewTake is { } take)
+                {
+                    @if (RefinementSource is { } source)
+                    {
+                        <TakeRefinementForm Source="source" Busy="@(_refinementBusy || _refinementEnqueue is not null)" Issue="@_refinementIssue" ContextChanged="@(_doc.Shots.FirstOrDefault(s => s.Id == source.ShotId) is not { } current || !TakeMatches(source, current))" Cancel="CloseRefinement" Refresh="CheckRefinementSetup" Queue="QueueRefinement" />
+                    }
+                    <TakePlayer @key="take.Id" ProjectId="Id" Take="take" SaveRequested="OpenFrameDestination" />
+                    <TakeSummary Take="take" Changes="TakeChanges(take)" />
+                    <details class="take-quality-actions"><summary>Improve quality</summary>
+                        <button @ref="_improveButton" disabled="@(take.RefinementPackage is null || _refinementBusy || _refinementEnqueue is not null || RefinementLocked(take))" @onclick="ConfigureRefinement">Improve quality</button>
+                        @if (take.Refinement is not null) { <button disabled="@_refinementBusy" @onclick="AnotherVersion">Another version</button> }
+                        @if (take.RefinementPackage is null) { <span class="field-hint">This take has no refinement data. To refine future takes, <a href="@SettingsUrl">install the optional companion</a> before generating them.</span> }
+                    </details>
+
+                    @if (_refinementEnqueue is not null) { <button disabled="@_refinementBusy" @onclick="RetryRefinementEnqueue">Retry queueing captured refinement</button> }
+                    @if (RefinementJob is { } refinementJob)
+                    {
+                        <AiJobProgressView Job="refinementJob" Queue="AiJobs.View" Progress="@(AiJobs.Progress(refinementJob.Id) ?? _videoProgress.GetValueOrDefault(refinementJob.Id))" VideoCandidates="VideoCandidates(refinementJob)" />
+                        @if (refinementJob.LocksTarget) { <button @onclick="() => CancelGeneration(refinementJob.Id)">Cancel refinement</button> }
+                        @if (RecoveryLabel(refinementJob) is { } label) { <button @onclick="async () => { try { await AiJobs.ResumeAsync(refinementJob.Id); } catch (Exception e) { _reviewError = e.Message; } }">@label</button> }
+                    }
+                    @if (_frameDestination is { } destination && destination.TakeId == take.Id)
+                    {
+                        <ImageCopyPanel @key="destination" ProjectId="Id" Library="_assets" TakeId="take.Id" FrameIndex="destination.Index"
+                            InitialName="@($"{take.Snapshot.Shot.Title} · frame {destination.Index + 1}")" Save="SaveFrameImage" Saved="FrameImageSaved" Cancelled="CloseFrameDestination" />
+                    }
+                    <p>@take.FrameCount frames · @(take.HasLosslessFrames ? "Lossless WebP archive" : "MP4 only") · @Bytes(take.Bytes) total</p>
+                    <details><summary>@(take.Refinement is null ? "Generation details" : "Original generation context")</summary><p>@take.Snapshot.Settings.Model · @(take.Refinement is null ? H3Policy.QualityLabel(take.Snapshot.Shot) + " · seed " + take.Seed : "Original preview: " + H3Policy.QualityLabel(take.Snapshot.Shot))</p><pre class="shot-source">@take.Snapshot.Prompt</pre><pre class="shot-source">@System.Text.Json.JsonSerializer.Serialize(take.Snapshot, AtomicJsonFile.Options)</pre></details>
+                    <RefinementDetails Take="take" />
+                    <VideoPerformanceDetails Take="take" />
+                    <VideoLoraDetails Snapshot="take.Snapshot" />
+                    <ShotInputPreview ProjectId="Id" Shot="take.Snapshot.Shot" Guidance="take.Snapshot.ReferenceGuidance" Restored="InputsRestored" />
+                    <a href="@TakeUrl(take.Id)" download="@TakeDownloadName(take.Id)">Download MP4</a>
+                }
+                else { <p>No saved take selected. Completed videos appear here.</p> }
+            </div>
+            <div class="shot-candidates" aria-label="Take candidates">
+                @foreach (var candidate in review.Candidates)
+                {
+                    var saved = _doc.Takes.FirstOrDefault(t => t.Id == candidate.TakeId);
+                    <article class="shot-candidate" @key="candidate.Number">
+                        @if (saved is not null) { <button data-shot-take="@saved.Id" aria-pressed="@(_reviewTakeId == saved.Id ? "true" : "false")" @onclick="() => SelectTake(saved.Id)"><img data-ai-candidate="@saved.Id" src="@TakeUrl(saved.Id, 0)" alt="" loading="lazy" />Take @candidate.Number</button><button disabled="@_mediaBusy" @onclick="() => ToggleSelectedTake(saved)">@(_doc.Shots.FirstOrDefault(s => s.Id == saved.ShotId)?.SelectedTakeId == saved.Id ? "Deselect take" : "Use this take")</button><button disabled="@(_mediaBusy || _doc.Shots.FirstOrDefault(s => s.Id == saved.ShotId)?.SelectedTakeId == saved.Id)" @onclick="() => DiscardTake(saved)">Discard</button> }
+                        else { <strong>Take @candidate.Number</strong><p>@(candidate.State == VideoCandidateState.Complete ? "Discarded · recoverable in Trash" : candidate.State)</p> }
+                        @if (candidate.Error is not null) { <p role="alert">@candidate.Error</p> }
+                        @if (candidate.State != VideoCandidateState.Complete && CandidateJob(candidate.Number)?.CanRecoverCancelledOutputs != true && RecoveryLabel(CandidateJob(candidate.Number)) is { } recoveryLabel)
+                        { <button @onclick="() => RetryCandidate(candidate.Number)">@recoveryLabel</button> }
+                    </article>
+                    <TakeVersions ProjectId="Id" ParentId="candidate.TakeId" Runs="_runs" Takes="_doc.Takes" SelectedId="_reviewTakeId" ProductionId="@(_doc.Shots.FirstOrDefault(s => s.Id == ReviewTake?.ShotId)?.SelectedTakeId)" Busy="_mediaBusy" Select="id => SelectTake(id)" Use="ToggleSelectedTake" Discard="DiscardTake" />
+                }
+            </div>
+        </div>
+        @if (_undoTrash is not null) { <p role="status">Take moved to Trash. <button disabled="@_mediaBusy" @onclick="UndoDiscard">Undo</button></p> }
+        @if (_notice is not null) { <p role="status">@_notice @if (_savedFrameImage is { } saved) { <a href="@(ProjectLink(Id, $"/assets?assetId={saved.AssetId}&imageId={saved.ImageId}"))">View in Assets</a> }</p> }
+        @if (_reviewError is not null) { <p role="alert">@_reviewError</p> }
+    }
+</DialogContent>
+<Status>@if (ReviewTake is { } regenTake) { <MudButton OnClick="() => RegenerateTake(regenTake)" Disabled="@(!CanRegenerate(regenTake))" title="@TakeDisplay.RegenerationIssue(regenTake)">Regenerate…</MudButton> }</Status>
+<Actions><MudButton OnClick="() => ReviewVisibility(false)">Close</MudButton>@if (_reviewRun is not null && _videoRequests.ContainsKey(_reviewRun.Id)) { <MudButton OnClick="OneMore" Disabled="@(!CanAddVideoTake)" Variant="Variant.Filled" Color="Color.Primary">One more take</MudButton> }</Actions></InlineDialog>
+
+<VideoRegenerationDialog ProjectId="Id" Take="_regenerationTake" Closed="() => _regenerationTake = null" Submitted="TakeRegenerationSubmitted" />
+
+
+<InlineDialog Visible="_planningOpen" VisibleChanged="PlanningVisibility" Options="@(LargeDialog with { CloseOnNavigation = false })" Class="shot-planning-dialog" DefaultFocus="DefaultFocus.FirstChild" OnKeyDown="PlanningKeyDown">
+    <TitleContent><div class="planning-dialog-heading"><h2>Draft shots</h2><button class="planning-close" @ref="_planningCloseElement" @onclick="ClosePlanning" disabled="@_applyingProposal" aria-label="Close breakdown"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" /></svg></button></div></TitleContent>
+    <DialogContent><div @ref="_planningDialogElement">
+        <lumibelle.Components.AI.AiResultAcknowledgement Observed="@(_observedPlanningJob is { } read && read.Id == _planningJob?.Id ? new[] { read } : [])" />
+        <p>Choose coverage from the saved script. Each shot is one continuous take, with a duration suited to its action and dialogue.</p>
+        @if (_planningJob is { } planningJob)
+        {
+            <p class="field-hint">@_planningRequest?.Selection.Name · @planningJob.State</p>
+            <AiJobProgressView Job="planningJob" Queue="AiJobs.View" Progress="@AiJobs.Progress(planningJob.Id)" />
+            @if (_planningRequest?.Script.Id != _approved?.Id) { <p role="status">A newer saved script revision is available. This breakdown uses its captured source.</p> }
+        }
+        @if (_planningJob is { } capturedPlanning) { <AiTextRequestDetails JobId="capturedPlanning.Id" /> }
+        @if (_planningError is not null) { <p role="alert">@_planningError</p> }
+        @if (_planningDraftError is not null)
+        {
+            <p role="alert">@_planningDraftError</p><a href="@PlanningDownloadUrl" download="shot-review.json">Download review copy</a>
+            @if (_planningDraftConflict) { <button @onclick="LoadPlanningDraftAsync">Load saved review</button> }
+            else { <button @onclick="() => SavePlanningDraftAsync()">Retry saving review</button> }
+        }
+        @if (_pendingPlanning is not null) { <button @onclick="RetryPlanningEnqueueAsync" disabled="@_planningSubmitting">Retry saving request</button> }
+        @if (_proposal is { } proposal)
+        {
+            @if (proposal.Error is not null) { <p role="alert">@proposal.Error</p> }
+            @if (proposal.CoverageNotes.Count > 0) {
+                <details class="planning-coverage-notes"><summary>Camera and editing notes · @proposal.CoverageNotes.Count</summary><p>These notes do not prevent application. Keep the proposed wording if it works for you.</p>
+                    @foreach (var note in proposal.CoverageNotes) { <p>@note</p> }
+                </details>
+            }
+            @if (proposal.DialogueNotes.Count > 0 || proposal.UncoveredDialogue.Count > 0) {
+                <details class="planning-dialogue-notes"><summary>Script comparison notes · @(proposal.DialogueNotes.Count + proposal.UncoveredDialogue.Count)</summary><p>These notes do not prevent application. Keep the proposed wording if it works for you.</p>
+                    @foreach (var note in proposal.DialogueNotes) { <p>@note</p> }
+                    @if (proposal.UncoveredDialogue.Count > 0) { <h3>Script lines not reproduced exactly</h3>@foreach (var line in proposal.UncoveredDialogue) { <p>@line</p> } }
+                </details>
+            }
+            @if (proposal.SourceNotes.Count > 0) {
+                <details class="planning-source-notes"><summary>Source reference notes · @proposal.SourceNotes.Count</summary><p>These notes do not prevent application. Unmatched source references were dropped; review the shot's script source before generating.</p>
+                    @foreach (var note in proposal.SourceNotes) { <p>@note</p> }
+                </details>
+            }
+            @if (PlanningApplied) { <p role="status">This breakdown was already added. It will not be applied again, even if its shots were later removed.</p> }
+            @if (proposal.Error is null) { <p class="field-hint" role="status">@(_planningDraftDirty ? "Saving review decisions…" : "Review decisions saved")</p> }
+            <fieldset disabled="@(_applyingProposal || PlanningApplied)"><legend class="sr-only">Review shot appearances</legend>
+            @foreach (var s in proposal.Shots) { <article class="shot-proposal" @key="s.Id"><h3>@s.Title · @DurationLabel(s)</h3><small>@s.SceneTitle</small><p>@s.Description</p>@foreach (var line in s.Dialogue) { <p><strong>@line.Speaker:</strong> @line.Text</p> }<ShotCastEditor Shot="s" Changed="characters => ReviewAppearances(s, characters)" /></article> }
+            </fieldset>
+        }
+        @if (_planningRaw.Length > 0) { <details><summary>Response details · @_planningRequest?.Selection.Name</summary><pre class="shot-source">@_planningRaw</pre></details> }
+    </div></DialogContent>
+    <DialogActions>
+        <MudButton OnClick="ClosePlanning" Disabled="_applyingProposal">Close</MudButton>
+        @if (_planning) { <MudButton OnClick="CancelPlanning">Cancel request</MudButton> }
+        else
+        {
+            @if (_planningJob is not null) { <MudButton OnClick="OpenPlanning" Disabled="@PlanningComposerLocked" Variant="Variant.Outlined">New breakdown</MudButton> }
+
+            <MudButton OnClick="ApplyProposal" Disabled="@(PlanningComposerLocked || PlanningApplied || _planningDraftConflict || _planningJob?.State != AiJobState.Completed || _proposal is not { Error: null, Shots.Count: > 0 })" Color="Color.Primary" Variant="Variant.Filled">Add reviewed shots</MudButton>
+        }
+    </DialogActions>
+</InlineDialog>
+
+<InlineDialog Visible="_deleteShotsOpen" VisibleChanged="CloseShotDeletion" Options="DeleteShotsOptions" Class="shot-delete-dialog shot-bulk-dialog"
+              Title="Delete shots" CloseLabel="Close delete shots" CloseDisabled="_deletingShots">
+    <Summary>Choose the shots to remove from this project.</Summary>
+    <DialogContent>
+        <div class="shot-bulk-layout">
+            @if (_deleteShotsOpen) { <ShotPicker Items="DeletePickerItems" SelectedIds="_deleteShotIds" SelectedIdsChanged="SetDeleteSelection" Disabled="_deletingShots" /> }
+            <aside class="shot-bulk-settings" aria-label="Deletion summary">
+                <h3>Selection summary</h3>
+                <div class="shot-bulk-summary"><strong>@Counted(_deleteShotIds.Count, "shot")</strong><span>will be removed from the project</span></div>
+                <dl class="shot-bulk-impact"><div><dt>Saved takes</dt><dd>@DeleteTakeCount</dd></div><div><dt>Production selections</dt><dd>@DeleteProductionCount</dd></div></dl>
+                <p class="shot-bulk-note">Saved takes move to Trash for 30 days. Restore shot definitions with Undo or Recovery. Images in Assets stay available.</p>
+                @if (DeleteProductionCount > 0) { <label class="shot-production-confirmation"><input type="checkbox" @bind="_clearProductionSelections" disabled="@_deletingShots" /><span>Also clear @Counted(DeleteProductionCount, "production take selection")</span></label> }
+            </aside>
+        </div>
+    </DialogContent>
+    <Status>
+        <span class="shot-bulk-count">@Counted(_deleteShotIds.Count, "shot") selected</span>
+        <div class="shot-bulk-feedback">@if (DeleteActivityIssue is { } activityIssue) { <p role="status">@activityIssue</p> }@if (_deleteShotsError is not null) { <p role="alert">@_deleteShotsError</p><MudButton OnClick="ReviewLatestDeletion" Disabled="@_deletingShots">Review latest shots</MudButton> }</div>
+    </Status>
+    <Actions><MudButton OnClick="() => CloseShotDeletion()" Disabled="@_deletingShots">Cancel</MudButton><MudButton OnClick="ConfirmShotDeletion" Color="Color.Error" Variant="Variant.Filled" Disabled="@(_deletingShots || _deleteShotIds.Count == 0 || DeleteActivityIssue is not null || DeleteProductionCount > 0 && !_clearProductionSelections)">@(_deletingShots ? "Deleting…" : $"Delete {Counted(_deleteShotIds.Count, "shot")}")</MudButton></Actions>
+</InlineDialog>
+<InlineDialog Visible="_recoveryOpen" VisibleChanged="v => _recoveryOpen = v" Options="@(LargeDialog with { MaxWidth = MaxWidth.Medium })" Class="shot-recovery-dialog" Title="Shot recovery" CloseLabel="Close shot recovery">
+    <Summary>The last 30 versions are kept from before shot edits, deletions, reviewed breakdowns and restores.</Summary>
+    <DialogContent>@if (_doc.Recovery.Count == 0) { <p class="field-hint">No recovery drafts yet.</p> }
+        <ul class="recovery-list">@foreach (var recovery in _doc.Recovery) { <li><span>@recovery.Reason <small>@recovery.CreatedUtc.ToLocalTime().ToString("g")</small></span><button class="lumi-button" @onclick="() => Recover(recovery.Id)">Restore draft</button></li> }</ul></DialogContent>
+    <Actions><MudButton OnClick="() => _recoveryOpen = false">Close</MudButton></Actions>
+</InlineDialog>
+
+<InlineDialog Visible="@(_picturePreview is not null)" VisibleChanged="v => { if (!v) _picturePreview = null; }" Options="@(LargeDialog with { MaxWidth = MaxWidth.Small })" Class="prompt-picture-dialog" Title="@($"Picture {_picturePreviewNumber}")" Context="@_picturePreview?.Name" CloseLabel="Close picture preview">
+    <DialogContent>@if (_picturePreview is { } b && ResolveImage(b).Url is { } url && _assets.Assets.FirstOrDefault(a => a.Id == b.AssetId)?.Images.FirstOrDefault(i => i.Id == b.MediaId) is { } media) { <CropThumbnail Url="@url" Label="Selected crop" Width="media.Width" Height="media.Height" Crop="b.Crop" ThumbnailWidth="360" ThumbnailHeight="360" /><p class="field-hint">@(b.Crop is null ? "Full image" : "Selected crop") · @b.AiUseHint</p> }</DialogContent>
+    <DialogActions><MudButton OnClick="() => _picturePreview = null">Close</MudButton></DialogActions>
+</InlineDialog>
+
+<InlineDialog Visible="_keyframePreview is not null" VisibleChanged="v => { if (!v) _keyframePreview = null; }" Options="@(LargeDialog with { MaxWidth = MaxWidth.Small })" Class="prompt-picture-dialog" Title="@($"Picture {_picturePreviewNumber}")" Context="@_keyframePreview?.Reel?.Name" CloseLabel="Close picture preview"><DialogContent>
+@if (_keyframePreview is { Keyframe: { } frame, Reel: { } reel }) { <CropThumbnail MeasureImage="true" Url="@ReferenceVideos.FrameUrl(Id, frame.Frame)" Label="Selected keyframe" Width="reel.Media.Width" Height="reel.Media.Height" Crop="frame.Crop" ThumbnailWidth="360" ThumbnailHeight="360" /><p>@frame.Frame.Seconds.ToString("0.###") s · @frame.Notes</p> }
+</DialogContent><DialogActions><MudButton OnClick="() => _keyframePreview = null">Close</MudButton></DialogActions></InlineDialog>
+<InlineDialog @bind-Visible="_moveTakesOpen" Options="@(LargeDialog with { MaxWidth = MaxWidth.Small, CloseOnEscapeKey = !_mediaBusy, BackdropClick = !_mediaBusy })" Title="Move takes to another shot" CloseLabel="Close move takes" CloseDisabled="_mediaBusy">
+    <DialogContent>
+        <p>Move @_moveTakeIds.Count @(_moveTakeIds.Count == 1 ? "take" : "takes") from @SourceShot?.Title.</p>
+        <label>Destination shot<select aria-label="Destination shot" @bind="_moveDestination" disabled="@_mediaBusy">
+            @foreach (var target in _doc.Shots.Where(s => s.Id != _takeSelectionShot)) { <option value="@target.Id">@(_doc.Shots.IndexOf(target) + 1). @target.Title</option> }
+        </select></label>
+        <p class="field-hint">Original prompts, references and generation settings stay with each take. Existing Cut clips keep their video.</p>
+        @if (_moveTakesError is not null) { <p role="alert">@_moveTakesError</p> }
+    </DialogContent>
+    <DialogActions><MudButton OnClick="() => _moveTakesOpen = false" Disabled="_mediaBusy">Cancel</MudButton><MudButton OnClick="MoveSelectedTakes" Disabled="@(_mediaBusy || _moveDestination is null)" Color="Color.Primary" Variant="Variant.Filled">Move takes</MudButton></DialogActions>
+</InlineDialog>

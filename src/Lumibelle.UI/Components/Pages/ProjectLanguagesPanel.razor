@@ -1,0 +1,75 @@
+@using lumibelle.Services.Production
+@inject IServiceProvider Services
+@implements IDisposable
+
+<section class="settings-card project-languages" aria-labelledby="project-languages-heading">
+    <h2 id="project-languages-heading">Languages and dubs</h2>
+    <p>The script remains in the master language. Dub variants translate spoken shot dialogue without changing the script or its visual and voice references.</p>
+    @if (_saved is not null)
+    {
+        <EditSessionRegistration Save="SaveForClose" />
+        <NavigationLock ConfirmExternalNavigation="_dirty" OnBeforeInternalNavigation="BeforeNavigation" />
+        <fieldset disabled="@_busy">
+            <legend>Master language</legend>
+            <div class="language-row"><label>Language code<input placeholder="en" maxlength="40" @bind="_mainCode" @bind:event="oninput" @bind:after="Dirty" /></label><label>Language name<input placeholder="English" maxlength="80" @bind="_mainName" @bind:event="oninput" @bind:after="Dirty" /></label></div>
+            <p class="field-hint">Names are used in the generated speech instructions. Regional codes such as en-GB, pt-BR or zh-CN are allowed.</p>
+            <h3>Dub languages</h3>
+            @foreach (var row in _dubs)
+            {
+                <div class="language-row" @key="row"><label>Dub code<input maxlength="40" @bind="row.Code" @bind:event="oninput" @bind:after="Dirty" /></label><label>Dub name<input maxlength="80" @bind="row.Name" @bind:event="oninput" @bind:after="Dirty" /></label><button type="button" @onclick="() => Remove(row)">Remove</button></div>
+            }
+            <button type="button" disabled="@(_dubs.Count >= 16)" @onclick="Add">Add dub language</button>
+            <label class="language-notes">Translation notes and glossary<textarea rows="4" maxlength="12000" placeholder="Keep character names unchanged; preserve humor; use informal Swedish…" @bind="_notes" @bind:event="oninput" @bind:after="Dirty"></textarea></label>
+        </fieldset>
+        <p class="field-hint">These are project preferences, not a claim that every voice or video model supports every language. Changing them does not rewrite existing scripts, prompts or takes.</p>
+        <div class="settings-section-actions"><MudButton OnClick="SaveClick" Disabled="@(_busy || !_dirty)" Variant="Variant.Filled" Color="Color.Primary">Save languages</MudButton><MudButton OnClick="Reload" Disabled="_busy">Discard draft and reload</MudButton></div>
+    }
+    else if (_error is null) { <p role="status">Loading languages…</p> }
+    @if (_error is not null) { <p role="alert" class="field-error">@_error</p>@if (_saved is null) { <button @onclick="Reload" disabled="@_busy">Retry reading languages</button> } }
+    @if (_notice is not null) { <p role="status">@_notice</p> }
+</section>
+
+@code {
+    [Parameter] public Guid ProjectId { get; set; }
+    private IProjectDubbingStore? Store => Services.GetService(typeof(IProjectDubbingStore)) as IProjectDubbingStore;
+    private ProjectLanguages? _saved;
+    private readonly List<LanguageRow> _dubs = [];
+    private string _mainCode = "", _mainName = "", _notes = "";
+    private string? _error, _notice;
+    private Guid? _loaded;
+    private bool _dirty, _busy, _disposed;
+    private sealed class LanguageRow { public string Code { get; set; } = ""; public string Name { get; set; } = ""; }
+    protected override async Task OnParametersSetAsync() { if (_loaded != ProjectId) { _loaded = ProjectId; await Reload(); } }
+    private void Dirty() { _dirty = true; _notice = null; }
+    private void Add() { _dubs.Add(new()); Dirty(); }
+    private void Remove(LanguageRow row) { _dubs.Remove(row); Dirty(); }
+    private async Task Reload()
+    {
+        var project = ProjectId;
+        try {
+            var saved = await (Store ?? throw new WorkspaceStoreException("Language settings are unavailable in this host.")).LanguagesAsync(project);
+            if (_disposed || project != ProjectId) return;
+            _saved = saved; _mainCode = saved.Main?.Code ?? ""; _mainName = saved.Main?.Name ?? ""; _notes = saved.TranslationNotes;
+            _dubs.Clear(); _dubs.AddRange(saved.Dubs.Select(l => new LanguageRow { Code = l.Code, Name = l.Name }));
+            _dirty = false; _error = null;
+        } catch (WorkspaceStoreException e) { _error = e.Message; }
+    }
+    private Task SaveClick() => Save();
+    private async Task<bool> Save()
+    {
+        if (_busy || _saved is null || Store is null) return false;
+        _busy = true;
+        try {
+            var draft = _saved with { Main = string.IsNullOrWhiteSpace(_mainCode) && string.IsNullOrWhiteSpace(_mainName) ? null : new(_mainCode, _mainName), Dubs = _dubs.Where(l => !string.IsNullOrWhiteSpace(l.Code) || !string.IsNullOrWhiteSpace(l.Name)).Select(l => new ProjectLanguage(l.Code, l.Name)).ToArray(), TranslationNotes = _notes };
+            _saved = await Store.SaveLanguagesAsync(draft, _saved.Revision);
+            _dirty = false; _error = null; _notice = "Languages saved. The master script and existing language versions are unchanged.";
+            return true;
+        } catch (WorkspaceConflictException) { _error = "Languages changed in another tab. Your draft is retained; copy your edits before reloading the saved settings."; return false; }
+        catch (WorkspaceStoreException e) { _error = e.Message; return false; }
+        finally { _busy = false; }
+    }
+    private Task<bool> SaveForClose() => !_dirty ? Task.FromResult(!_busy) : Save();
+    private async Task BeforeNavigation(Microsoft.AspNetCore.Components.Routing.LocationChangingContext context)
+    { if (_busy || _dirty && !await Save()) context.PreventNavigation(); }
+    public void Dispose() => _disposed = true;
+}

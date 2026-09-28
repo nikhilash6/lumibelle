@@ -1,0 +1,106 @@
+@using lumibelle.Services.Projects
+@inherits ProjectAwareComponent
+@implements IDisposable
+@inject IProjectFolders Folders
+@inject NavigationManager Navigation
+
+<section class="settings-card project-storage" aria-labelledby="project-storage-heading" aria-busy="@_busy">
+    <h2 id="project-storage-heading">Storage</h2>
+    @if (_loading) { <p role="status">Checking where this project is saved…</p> }
+    else if (_location is { } location)
+    {
+        <p>This project is saved in a folder outside the library. Every change is saved there.</p>
+        <p class="project-storage-path"><MudIcon Icon="@Icons.Material.Outlined.Folder" Size="Size.Small" /><code>@location.Path</code></p>
+        <MudButton Variant="Variant.Outlined" Disabled="_busy" OnClick="() => { _error = null; _confirmRemove = true; }">Remove from library…</MudButton>
+    }
+    else
+    {
+        <p>This project is saved in the library folder. Move it to a folder of your choice, such as a synced or external drive, and keep editing it there.</p>
+        <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Outlined.DriveFileMove" Disabled="_busy" OnClick="OpenMove">Move to folder…</MudButton>
+    }
+    @if (_notice is not null) { <p role="status">@_notice</p> }
+    @if (_error is not null && !_moveOpen && !_confirmRemove) { <p class="field-error" role="alert">@_error</p> }
+</section>
+
+<InlineDialog Visible="_moveOpen" VisibleChanged="value => { if (!_busy) _moveOpen = value; }" Options="@(new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, BackdropClick = false })"
+              Class="project-folder-dialog" Title="Move to folder" Context="@Project.Name" CloseLabel="Close move to folder" CloseDisabled="_busy">
+    <DialogContent>
+        <ProjectFolderField Id="project-move-folder" Label="Destination folder" @bind-Value="_destination" Disabled="_busy">
+            <Hint>Lumibelle creates the folder “@ProjectFolders.FolderName(Project.Name)” inside it and moves the project there. The project stays in your projects.</Hint>
+        </ProjectFolderField>
+        <p class="field-hint">Close this project in other windows first. A project with queued or working AI requests can’t be moved. Moving to another drive copies every file, which can take a while.</p>
+        @if (_progress is { } progress) { <p role="status">@progress.Message @(progress.Bytes > 0 ? $" · {progress.Files} files · {Bytes(progress.Bytes)}" : "")</p> }
+        @if (_error is not null) { <p class="field-error" role="alert">@_error</p> }
+    </DialogContent>
+    <DialogActions>
+        @if (_busy) { <MudButton OnClick="() => _operation?.Cancel()">Cancel move</MudButton> }
+        else { <MudButton OnClick="() => _moveOpen = false">Cancel</MudButton> }
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@(_busy || string.IsNullOrWhiteSpace(_destination))" OnClick="MoveAsync">@(_busy ? "Moving…" : "Move project")</MudButton>
+    </DialogActions>
+</InlineDialog>
+
+<InlineDialog Visible="_confirmRemove" VisibleChanged="value => { if (!_busy) _confirmRemove = value; }" Options="@(new DialogOptions { MaxWidth = MaxWidth.ExtraSmall, FullWidth = true })"
+              Title="Remove from library?" Context="@Project.Name" CloseLabel="Close remove from library" CloseDisabled="_busy">
+    <DialogContent>
+        <p>The folder and all its files stay where they are. You can add it again with <strong>Open project folder</strong> on Your projects.</p>
+        @if (_error is not null) { <p class="field-error" role="alert">@_error</p> }
+    </DialogContent>
+    <DialogActions>
+        <MudButton Disabled="_busy" OnClick="() => _confirmRemove = false">Keep in library</MudButton>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="_busy" OnClick="RemoveAsync">Remove from library</MudButton>
+    </DialogActions>
+</InlineDialog>
+
+@code {
+    [Parameter, EditorRequired] public ProjectInfo Project { get; set; } = null!;
+    private ProjectLocation? _location;
+    private bool _loading = true, _busy, _moveOpen, _confirmRemove, _disposed;
+    private string _destination = "";
+    private string? _error, _notice;
+    private ProjectPackageProgress? _progress;
+    private CancellationTokenSource? _operation;
+    private readonly CancellationTokenSource _lifetime = new();
+    private static string Bytes(long bytes) => bytes >= 1024L * 1024 * 1024 ? $"{bytes / (1024d * 1024 * 1024):0.00} GiB" : $"{bytes / (1024d * 1024):0.0} MiB";
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _loading = true;
+        try { _location = await Folders.LocationAsync(Project.Id); }
+        catch (WorkspaceStoreException e) { _error = e.Message; }
+        finally { _loading = false; }
+    }
+
+    private void OpenMove() { _destination = ""; _error = null; _progress = null; _moveOpen = true; }
+
+    private async Task MoveAsync()
+    {
+        if (_busy) return;
+        _busy = true; _error = null; _notice = null;
+        using var operation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token); _operation = operation;
+        var progress = new Progress<ProjectPackageProgress>(p => { if (!_disposed) _ = InvokeAsync(() => { _progress = p; StateHasChanged(); }); });
+        try
+        {
+            _location = await Folders.MoveOutAsync(Project.Id, _destination, progress, operation.Token);
+            _moveOpen = false; _notice = "Moved. Every change is now saved in the new folder.";
+        }
+        catch (OperationCanceledException) when (operation.IsCancellationRequested) { if (!_disposed) _error = "Move cancelled. The project is still in the library folder."; }
+        catch (Exception e) when (e is ProjectStoreException or WorkspaceStoreException) { _error = e.Message; }
+        finally { _operation = null; _busy = false; _progress = null; }
+    }
+
+    private async Task RemoveAsync()
+    {
+        if (_busy) return;
+        _busy = true; _error = null;
+        try
+        {
+            await Folders.RemoveAsync(Project.Id);
+            if (ProjectRoutes is not null) await ProjectRoutes.RefreshAsync();
+            Navigation.NavigateTo("/");
+        }
+        catch (Exception e) when (e is ProjectStoreException or WorkspaceStoreException) { _error = e.Message; }
+        finally { _busy = false; }
+    }
+
+    public void Dispose() { _disposed = true; _lifetime.Cancel(); _lifetime.Dispose(); }
+}

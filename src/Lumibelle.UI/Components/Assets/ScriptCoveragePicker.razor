@@ -1,0 +1,44 @@
+<div class="coverage-controls">
+    <label>Show scenes<select @bind="_filter" disabled="@Disabled"><option value="all">All scenes</option><option value="new">Not reviewed</option><option value="changed">Changed since review</option><option value="current">Up to date</option></select></label>
+    <button disabled="@Disabled" @onclick="SelectOutstanding">Select new/changed scenes</button>
+    <button disabled="@Disabled" @onclick="SelectAll">Select all</button><button disabled="@Disabled" @onclick="Clear">Clear</button>
+</div>
+<div class="coverage-scenes" aria-label="Script scenes">
+    @foreach (var group in Sections.Where(s => s.Kind == ScriptBlockKind.Scene).GroupBy(s => s.ActId))
+    {
+        var visible = group.Where(s => Visible(State(s.Id))).ToArray();
+        @if (visible.Length > 0)
+        {
+            <section class="coverage-act"><h3>@(Sections.FirstOrDefault(s => s.Id == group.Key)?.Title ?? "Scenes")</h3>
+            @foreach (var scene in visible)
+            {
+                var state = State(scene.Id);
+                <label class="coverage-scene"><input type="checkbox" checked="@Selected.Contains(scene.Id)" @onchange="e => Toggle(scene.Id, e.Value is true)" disabled="@Disabled" /><span><strong>@scene.Title</strong><small>@ExtractionCoverage.Label(state)</small></span></label>
+            }
+            </section>
+        }
+    }
+</div>
+<p class="field-hint" role="status">@Selected.Count of @_scenes.Count script scenes selected. Finishing review records coverage even when you skip every proposal.</p>
+@code {
+    [Parameter, EditorRequired] public ScriptSourceSnapshot Source { get; set; } = null!;
+    [Parameter] public IReadOnlyList<AssetExtractionReview> Reviews { get; set; } = [];
+    [Parameter] public IReadOnlySet<Guid> Selected { get; set; } = new HashSet<Guid>();
+    [Parameter] public EventCallback<HashSet<Guid>> SelectedChanged { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    private string _filter = "all";
+    private IReadOnlyList<ReviewedAssetScene> _scenes = [];
+    private IReadOnlyList<ScriptSection> Sections { get; set; } = [];
+    private ScriptSourceSnapshot? _capturedSource;
+    protected override void OnParametersSet()
+    {
+        if (ReferenceEquals(_capturedSource, Source)) return;
+        _capturedSource = Source; Sections = ScriptStructure.Sections(Source.Blocks); _scenes = ExtractionCoverage.Scenes(Source);
+    }
+    private SceneCoverageState State(Guid id) => ExtractionCoverage.State(_scenes.Single(s => s.SceneId == id), Reviews);
+    private bool Visible(SceneCoverageState state) => _filter == "all" || _filter == "new" && state == SceneCoverageState.NotReviewed || _filter == "changed" && state == SceneCoverageState.Changed || _filter == "current" && state == SceneCoverageState.Current;
+    private Task Toggle(Guid id, bool value) { var next = Selected.ToHashSet(); if (value) next.Add(id); else next.Remove(id); return SelectedChanged.InvokeAsync(next); }
+    private Task SelectAll() => SelectedChanged.InvokeAsync(_scenes.Select(s => s.SceneId).ToHashSet());
+    private Task Clear() => SelectedChanged.InvokeAsync(new HashSet<Guid>());
+    private Task SelectOutstanding() => SelectedChanged.InvokeAsync(_scenes.Where(s => State(s.SceneId) != SceneCoverageState.Current).Select(s => s.SceneId).ToHashSet());
+}

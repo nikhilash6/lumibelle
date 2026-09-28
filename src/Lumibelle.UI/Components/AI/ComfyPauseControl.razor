@@ -1,0 +1,41 @@
+@using lumibelle.Models
+@using lumibelle.Services.AI
+@using lumibelle.Services.Story
+
+<div class="comfy-pause-control">
+    <button type="button" disabled="@_busy" aria-label="@(Paused ? "Resume queue ComfyUI" : "Pause queue ComfyUI")" @onclick="Toggle">@(Paused ? "Resume" : "Pause queue")</button>
+    @if (_confirm && !Paused)
+    {
+        <section role="group" aria-label="Confirm stopping ComfyUI for pause">
+            <p><strong>Pause and keep the current request?</strong></p>
+            <p>@ActiveCount running or unconfirmed ComfyUI request(s). Pause stops only Lumibelle-owned work, preserves saved takes, and retains unfinished work to restart on Resume.</p>
+            <p class="field-hint">Sampler progress is not checkpointed. An interrupted workflow, including a combined multi-take workflow, may run again. A missing acceptance receipt or cleared server history cannot prove whether earlier computation completed.</p>
+            <button type="button" disabled="@_busy" @onclick="() => SetPaused(true)">Pause and keep request</button>
+            <button type="button" disabled="@_busy" @onclick="() => _confirm = false">Keep running</button>
+        </section>
+    }
+    @if (_error is not null) { <p class="field-error" role="alert">@_error</p> }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public AiJobCoordinator Jobs { get; set; } = null!;
+    private bool Paused => Jobs.View.Paused.Contains(AiBackend.ComfyUI);
+    private int ActiveCount => Jobs.View.Jobs.Count(ComfyQueuePolicy.NeedsPause);
+    private bool _confirm, _busy;
+    private string? _error;
+    private async Task Toggle()
+    {
+        if (_busy) return;
+        _error = null;
+        if (!Paused && ActiveCount > 0) { _confirm = true; return; }
+        await SetPaused(!Paused);
+    }
+    private async Task SetPaused(bool paused)
+    {
+        if (_busy) return;
+        _busy = true; _error = null;
+        try { await Jobs.SetPausedAsync(AiBackend.ComfyUI, paused); _confirm = false; }
+        catch (Exception e) when (e is WorkspaceStoreException or AiGenerationException) { _error = e.Message; }
+        finally { _busy = false; }
+    }
+}

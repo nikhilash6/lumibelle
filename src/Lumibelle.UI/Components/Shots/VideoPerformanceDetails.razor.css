@@ -1,0 +1,4 @@
+.video-performance-details { margin-block: .5rem; min-width: 0; overflow-wrap: anywhere; }
+.video-performance-details dl { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .3rem 1rem; max-width: 28rem; font-size: var(--lumi-font-size-ui); }
+.video-performance-details dd { margin: 0; font-variant-numeric: tabular-nums; }
+.video-performance-details pre { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 100%; font-size: var(--lumi-font-size-meta); }

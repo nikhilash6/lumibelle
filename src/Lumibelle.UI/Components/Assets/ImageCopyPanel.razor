@@ -1,0 +1,95 @@
+@inherits ProjectAwareComponent
+@inject NavigationManager Navigation
+
+<section class="image-copy-panel" aria-label="Save image to Assets">
+    @if (ShowHeading) { <h3>@(Parent is null ? "Save frame to Assets" : "Save cropped copy")</h3> }
+    @if (Parent is null) { <p class="field-hint">@(FrameDescription ?? $"Frame {FrameIndex + 1} · saved from the take as an independent image.")</p> }
+    <fieldset disabled="@(_busy || _captured is not null)">
+        @if (Parent is not null) { <ImageCropEditor Disabled="@(_busy || _captured is not null)" Url="@SourceUrl" Width="SourceWidth" Height="SourceHeight" CropChanged="c => _crop = c" /> }
+        <div class="image-copy-fields">
+            <label>Destination asset<select @ref="_destinationInput" @bind="_destination" @bind:after="() => _look = null"><option value="new">Create a new asset…</option>@foreach (var asset in Library.Assets.OrderBy(a => a.Name)) { <option value="@asset.Id">@asset.Name</option> }</select></label>
+            @if (_destination == "new")
+            {
+                <label>New asset name<input maxlength="240" @bind="_assetName" @bind:event="oninput" /></label>
+                <label>Asset category<select @bind="_category">@foreach (var category in Enum.GetValues<AssetCategory>()) { <option value="@category">@category</option> }</select></label>
+            }
+            else if (DestinationAsset?.Category == AssetCategory.Character)
+            {
+                <label>Destination look<select @bind="_look"><option value="">General / unassigned</option>@foreach (var look in DestinationAsset.Looks.Where(l => !l.Archived)) { <option value="@look.Id">@look.Name</option> }</select></label>
+            }
+            <label>Image name<input maxlength="240" @bind="_name" @bind:event="oninput" /></label>
+            <label>What to keep consistent (optional)<textarea maxlength="12000" rows="2" @bind="_notes" @bind:event="oninput"></textarea></label>
+        </div>
+    </fieldset>
+    @if (_error is not null) { <p role="alert">@_error</p> }
+    <div class="dialog-actions">
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@(_busy || !Valid)" OnClick="() => SaveAsync(false)">@(_busy ? "Saving…" : _captured is not null ? "Retry save" : "Save")</MudButton>
+        <MudButton Variant="Variant.Outlined" Disabled="@(_busy || !Valid)" OnClick="() => SaveAsync(true)">Save and edit</MudButton>
+        @if (_captured is not null && !_busy) { <MudButton OnClick="ChangeInputs">Change inputs</MudButton> }
+        <MudButton Disabled="_busy" OnClick="Cancelled">Cancel</MudButton>
+    </div>
+</section>
+
+@code {
+    [Parameter] public Guid ProjectId { get; set; }
+    [Parameter, EditorRequired] public AssetLibrary Library { get; set; } = default!;
+    [Parameter] public Guid? TakeId { get; set; }
+    [Parameter] public int FrameIndex { get; set; }
+    [Parameter] public AssetImageReference? Parent { get; set; }
+    [Parameter] public int SourceWidth { get; set; }
+    [Parameter] public int SourceHeight { get; set; }
+    [Parameter] public string SourceUrl { get; set; } = "";
+    [Parameter] public string InitialName { get; set; } = "";
+    [Parameter] public bool ShowHeading { get; set; } = true;
+    [Parameter] public string? FrameDescription { get; set; }
+    [Parameter] public ReelFrameExport? ReelFrame { get; set; }
+    [Parameter] public Guid? InitialAssetId { get; set; }
+    [Parameter] public Guid? InitialLookId { get; set; }
+    [Parameter, EditorRequired] public Func<DerivedImageRequest, Task<SavedAssetImage>> Save { get; set; } = default!;
+    [Parameter] public EventCallback<SavedAssetImage> Saved { get; set; }
+    [Parameter] public EventCallback Cancelled { get; set; }
+    private string _destination = "new", _assetName = "", _name = "", _notes = "";
+    private AssetCategory _category = AssetCategory.Reference; private Guid? _look;
+    private ElementReference _destinationInput;
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender) try { await _destinationInput.FocusAsync(); } catch (JSDisconnectedException) { }
+    }
+    private bool _busy; private string? _error; private DerivedImageRequest? _captured; private ImageCropRegion _crop = new();
+    private ReferenceAsset? DestinationAsset => Guid.TryParse(_destination, out var id) ? Library.Assets.FirstOrDefault(a => a.Id == id) : null;
+    private bool Valid => _captured is not null || !string.IsNullOrWhiteSpace(_name) && (_destination != "new" || !string.IsNullOrWhiteSpace(_assetName));
+    protected override void OnInitialized()
+    {
+        _name = InitialName;
+        _assetName = InitialName;
+        if (InitialAssetId is { } assetId && Library.Assets.Any(a => a.Id == assetId))
+        {
+            _destination = assetId.ToString();
+            _look = DestinationAsset?.Looks.Any(l => l.Id == InitialLookId && !l.Archived) == true ? InitialLookId : null;
+        }
+        if (Parent is { } parent)
+        {
+            _destination = parent.AssetId.ToString();
+            _look = Library.Assets.FirstOrDefault(a => a.Id == parent.AssetId)?.Images.FirstOrDefault(i => i.Id == parent.ImageId)?.LookId;
+            if (DestinationAsset?.Looks.Any(l => l.Id == _look && l.Archived) == true) _look = null;
+        }
+    }
+    private void ChangeInputs() { _captured = null; _error = null; }
+    private async Task SaveAsync(bool edit)
+    {
+        if (_busy || !Valid) return;
+        _captured ??= new(Guid.NewGuid(), new(_destination == "new" ? Guid.NewGuid() : Guid.Parse(_destination), _look,
+            _destination == "new" ? _assetName : null, _category), _name, _notes, TakeId,
+            TakeId is null ? null : FrameIndex, Parent, Parent is null ? null : _crop) { ReelFrame = ReelFrame };
+        _busy = true; _error = null;
+        try
+        {
+            var result = await Save(_captured);
+            if (!result.Available) { _error = "This copy was already saved, then removed. Restore it from Trash if available."; return; }
+            await Saved.InvokeAsync(result);
+            if (edit) Navigation.NavigateTo(ProjectLink(ProjectId, $"/assets?assetId={result.AssetId}&imageId={result.ImageId}&edit=true"));
+        }
+        catch (Exception e) when (e is WorkspaceStoreException or IOException) { _error = e.Message; }
+        finally { _busy = false; }
+    }
+}

@@ -1,0 +1,18 @@
+<span class="reel-thumbnail">
+    @if (!_failed) {
+        <img src="@ReferenceVideos.ThumbnailUrl(ProjectId, MediaId)" alt="" loading="lazy" decoding="async" @onerror="() => _failed = true" />
+    } else {
+        <span class="thumbnail-unavailable" aria-hidden="true">▶</span>
+    }
+</span>
+@code {
+    [Parameter] public Guid ProjectId { get; set; }
+    [Parameter] public Guid MediaId { get; set; }
+    private (Guid, Guid) _identity;
+    private bool _failed;
+    protected override void OnParametersSet()
+    {
+        if (_identity == (ProjectId, MediaId)) return;
+        _identity = (ProjectId, MediaId); _failed = false;
+    }
+}

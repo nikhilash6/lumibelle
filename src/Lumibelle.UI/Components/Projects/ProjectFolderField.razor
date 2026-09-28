@@ -1,0 +1,25 @@
+@inject IHostActions Host
+
+<div class="project-folder-field">
+    <label for="@Id">@Label</label>
+    <div class="project-folder-input">
+        <input id="@Id" type="text" value="@Value" @oninput="e => ValueChanged.InvokeAsync(e.Value?.ToString() ?? string.Empty)" disabled="@Disabled"
+               placeholder="@Placeholder" spellcheck="false" autocomplete="off" aria-describedby="@($"{Id}-hint")" />
+        @if (Host.CanPickFolder) { <MudButton Variant="Variant.Outlined" Disabled="Disabled" OnClick="Browse">Browse…</MudButton> }
+    </div>
+    <p id="@($"{Id}-hint")" class="field-hint">@Hint</p>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public string Id { get; set; } = "";
+    [Parameter, EditorRequired] public string Label { get; set; } = "";
+    [Parameter] public string Value { get; set; } = "";
+    [Parameter] public EventCallback<string> ValueChanged { get; set; }
+    [Parameter] public RenderFragment? Hint { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    private static string Placeholder => OperatingSystem.IsWindows() ? @"For example D:\Films\My project" : "For example /Volumes/Films/My project";
+    private async Task Browse()
+    {
+        if (await Host.PickFolderAsync() is { } folder) await ValueChanged.InvokeAsync(folder);
+    }
+}

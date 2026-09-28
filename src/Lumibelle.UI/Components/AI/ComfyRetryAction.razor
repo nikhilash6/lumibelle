@@ -1,0 +1,66 @@
+@using lumibelle.Models
+@using lumibelle.Services.AI
+@using lumibelle.Services.Story
+@using Microsoft.AspNetCore.Components.Web
+@using Microsoft.JSInterop
+@inject IServiceProvider Services
+
+@if (Coordinator is not null && ComfyQueuePolicy.CanRetry(Job))
+{
+    <section class="comfy-retry-action" aria-label="ComfyUI reconnect and retry">
+        @if (Job.ComfyControl is not null)
+        {
+            <p class="field-hint" role="status">@(Job.ComfyControl.PauseRequested
+                ? "Stop confirmation is checked automatically. This request is kept for queue resume."
+                : Paused ? "Retry is retained until the ComfyUI queue resumes."
+                : "Retry is armed. Reconnection is checked automatically; existing remote work is reused when found.")</p>
+        }
+        @if (!_confirm)
+        {
+            <button type="button" @ref="_trigger" disabled="@_busy" @onclick="ConfirmRetry">@(Job.ComfyControl is null ? "Retry when connected" : "Retry again…")</button>
+        }
+        else
+        {
+            <div role="group" aria-label="Confirm ComfyUI retry">
+                <p>Check the original ComfyUI server and restart this captured workflow only if it is missing or stopped. Completed saved takes remain unchanged.</p>
+                <p class="field-hint">If the server cleared its history or never acknowledged the original request, completed computation may run again. An interrupted multi-take workflow may restart as a whole. No other user's running job will be interrupted.</p>
+                @if (Paused) { <p class="field-hint">The queue is paused. Generation will wait until Resume.</p> }
+                <button type="button" @ref="_confirmButton" disabled="@_busy" @onclick="Retry">Confirm retry</button>
+                <button type="button" disabled="@_busy" @onclick="Dismiss">Keep waiting</button>
+            </div>
+        }
+        @if (_error is not null) { <p class="field-error" role="alert">@_error</p> }
+    </section>
+}
+
+@code {
+    [Parameter, EditorRequired] public AiJobHeader Job { get; set; } = null!;
+    [Parameter] public bool Paused { get; set; }
+    private AiJobCoordinator? Coordinator => Services.GetService(typeof(AiJobCoordinator)) as AiJobCoordinator;
+    private bool _confirm, _busy, _focusConfirm, _focusTrigger;
+    private ElementReference _trigger, _confirmButton;
+    private string? _error;
+    private Guid _target;
+    private long _version;
+    private void ConfirmRetry() { _target = Job.Id; _version = Job.Version; _error = null; _confirm = true; _focusConfirm = true; }
+    private void Dismiss() { _confirm = false; _focusTrigger = true; }
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (Coordinator is null || !ComfyQueuePolicy.CanRetry(Job)) return;
+        try
+        {
+            if (_focusConfirm && _confirm) { _focusConfirm = false; await _confirmButton.FocusAsync(); }
+            if (_focusTrigger && !_confirm) { _focusTrigger = false; await _trigger.FocusAsync(); }
+        }
+        catch (JSDisconnectedException) { }
+    }
+    private async Task Retry()
+    {
+        if (_busy || Coordinator is not { } jobs || Job.Id != _target) return;
+        _busy = true; _error = null;
+        try { await jobs.RetryComfyAsync(_target, _version); Dismiss(); }
+        catch (WorkspaceConflictException) { _error = "The request changed while this confirmation was open. Close the confirmation, check its current status, and retry."; }
+        catch (Exception e) when (e is WorkspaceStoreException or AiGenerationException) { _error = e.Message; }
+        finally { _busy = false; }
+    }
+}

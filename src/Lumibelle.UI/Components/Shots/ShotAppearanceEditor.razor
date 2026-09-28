@@ -1,0 +1,41 @@
+@inherits ProjectAwareComponent
+<section class="shot-appearances" aria-label="Character appearances">
+    <h2>Character appearances</h2>
+    @foreach (var character in ShotReferences.Characters(Shot))
+    {
+        var assignment = character.Appearance;
+        var asset = Library.Assets.FirstOrDefault(a => a.Id == assignment?.AssetId);
+        <article class="shot-appearance" @key="character.Id">
+            <strong>@character.Name</strong>
+            <label>Character asset<select aria-label="Character asset" value="@assignment?.AssetId" @onchange="e => SetAsset(character.Id, e)"><option value="">No look assignment</option>@foreach (var a in Library.Assets.Where(a => a.Category == AssetCategory.Character)) { <option value="@a.Id">@a.Name</option> }</select></label>
+            @if (assignment is not null)
+            {
+                <label>Appearance mode<select aria-label="Appearance mode" value="@(assignment.EndLookId is null ? "single" : "transition")" @onchange="e => Mode(character.Id, e)"><option value="single">One look</option><option value="transition">Transition: starting → ending</option></select></label>
+                <label>@(assignment.EndLookId is null ? "Current look" : "Starting look")<select aria-label="@(assignment.EndLookId is null ? "Current look" : "Starting look")" value="@(assignment.LookId == Guid.Empty ? "" : assignment.LookId.ToString())" @onchange="e => Look(character.Id, e, false)"><option value="">Choose look…</option>@foreach (var look in asset?.Looks.Where(l => !l.Archived || l.Id == assignment.LookId) ?? []) { <option value="@look.Id" disabled="@look.Archived">@look.Name @(look.Archived ? "· Archived" : "")</option> }</select></label>
+                @if (assignment.EndLookId is not null) { <label>Ending look<select aria-label="Ending look" value="@(assignment.EndLookId == Guid.Empty ? "" : assignment.EndLookId.ToString())" @onchange="e => Look(character.Id, e, true)"><option value="">Choose look…</option>@foreach (var look in asset?.Looks.Where(l => !l.Archived || l.Id == assignment.EndLookId) ?? []) { <option value="@look.Id" disabled="@look.Archived">@look.Name @(look.Archived ? "· Archived" : "")</option> }</select></label><p class="field-hint">Describe the change in the shot's action. Reference images are selected separately.</p> }
+                @if (asset?.Looks.Any(l => !l.Archived) != true) { <a href="@(ProjectLink(Library.ProjectId, $"/assets?assetId={assignment.AssetId}"))">Manage character looks</a> }
+                <button @onclick="() => Set(character.Id, null)">Clear appearance</button>
+            }
+        </article>
+    }
+    <label>Add character appearance<select aria-label="Add character appearance" value="" @onchange="Add"><option value="">Choose a character…</option>@foreach (var asset in Library.Assets.Where(a => a.Category == AssetCategory.Character && !ShotReferences.Characters(Shot).Any(c => c.Appearance?.AssetId == a.Id))) { <option value="@asset.Id">@asset.Name</option> }</select></label>
+</section>
+@code {
+    [Parameter, EditorRequired] public Shot Shot { get; set; } = default!;
+    [Parameter, EditorRequired] public AssetLibrary Library { get; set; } = default!;
+    [Parameter] public EventCallback<List<ShotCharacter>> Changed { get; set; }
+    private static Guid Id(ChangeEventArgs e) => Guid.TryParse(e.Value?.ToString(), out var id) ? id : Guid.Empty;
+    private Task Set(Guid id, ShotAppearance? appearance) => Changed.InvokeAsync(ShotReferences.Characters(Shot).Select(c => c.Id == id ? c with { Appearance = appearance } : c).ToList());
+    private Task SetAsset(Guid id, ChangeEventArgs e) => Set(id, Id(e) is var asset && asset != Guid.Empty ? new(asset, Guid.Empty) : null);
+    private Task Mode(Guid id, ChangeEventArgs e) { var a = ShotReferences.Characters(Shot).Single(c => c.Id == id).Appearance!; return Set(id, a with { EndLookId = e.Value?.ToString() == "transition" ? Guid.Empty : null }); }
+    private Task Look(Guid id, ChangeEventArgs e, bool ending) { var a = ShotReferences.Characters(Shot).Single(c => c.Id == id).Appearance!; return Set(id, ending ? a with { EndLookId = Id(e) } : a with { LookId = Id(e) }); }
+    private Task Add(ChangeEventArgs e)
+    {
+        var asset = Library.Assets.FirstOrDefault(a => a.Id == Id(e)); if (asset is null) return Task.CompletedTask;
+        var characters = ShotReferences.Characters(Shot).ToList();
+        var existing = characters.FindIndex(c => string.Equals(c.Name, asset.Name, StringComparison.OrdinalIgnoreCase));
+        if (existing >= 0) characters[existing] = characters[existing] with { Appearance = new(asset.Id, Guid.Empty) };
+        else characters.Add(new(Guid.NewGuid(), asset.Name) { Appearance = new(asset.Id, Guid.Empty) });
+        return Changed.InvokeAsync(characters);
+    }
+}

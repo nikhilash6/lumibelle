@@ -1,0 +1,24 @@
+{
+  "name": "lumibelle-editor",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/Lumibelle.UI/Client/script-editor.js --bundle --format=esm --minify --outfile=src/Lumibelle.UI/wwwroot/script-editor.js --legal-comments=linked && esbuild src/Lumibelle.UI/Client/prompt-editor.js --bundle --format=esm --minify --outfile=src/Lumibelle.UI/wwwroot/prompt-editor.js --legal-comments=linked",
+    "pretest": "npm run build",
+    "test": "playwright test",
+    "test:unit": "node --experimental-vm-modules --test tests/node/*.test.mjs tests/browser/*.unit.test.mjs"
+  },
+  "dependencies": {
+    "@tiptap/core": "3.31.3",
+    "@tiptap/pm": "3.31.3",
+    "@tiptap/extension-document": "3.31.3",
+    "@tiptap/extension-text": "3.31.3",
+    "@tiptap/extension-bold": "3.31.3",
+    "@tiptap/extension-italic": "3.31.3",
+    "@tiptap/extensions": "3.31.3"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "@playwright/test": "1.63.0"
+  }
+}

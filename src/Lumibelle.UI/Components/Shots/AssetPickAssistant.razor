@@ -1,0 +1,92 @@
+@using lumibelle.Components.AI
+@using lumibelle.Services.Production
+
+<details class="asset-pick-assistant" open="@(RequestedJobId is not null)">
+    <summary>Assist · choose references</summary>
+    <TextAssistance @ref="_assist" Inline="true" ProjectId="Library.ProjectId" Studio="TextAssistantStudio.Production"
+                    Title="Suggest references" Disabled="Disabled" ModelLocked="@(Working || _active is not null)"
+                    SelectionChanged="value => _model = value">
+        <ChildContent>
+            <p class="field-hint">Uses this shot's action, dialogue, prompt and saved asset descriptions. No images, audio or videos are sent to the selecting model.</p>
+            @if (_catalogue is { } catalogue)
+            {
+                <p class="field-hint">@catalogue.Assets.Count assets · @catalogue.Candidates.Count(c => c.Kind == "Image") images · @catalogue.Candidates.Count(c => c.Kind == "Reel") reels · @catalogue.Candidates.Count(c => c.Kind == "Voice") recordings.</p>
+                @if (catalogue.Candidates.Count == 0) { <p role="status">Add reference media in Assets before asking for a selection.</p> }
+                @if (catalogue.Candidates.Count(c => c.Kind == "Image" && string.IsNullOrWhiteSpace(c.Description)) is var missing && missing > 0)
+                { <p class="field-hint">@missing images have no visual description. Names, tags and guidance remain available, but matching those images is less reliable.</p> }
+            }
+            <label class="asset-pick-mode"><input type="checkbox" @bind="_replaceExisting" @bind:after="RefreshPlan" disabled="@(Disabled || Working || _active is not null || _pending is not null)" /> Propose a replacement for all current references</label>
+            <p class="field-hint">@(_replaceExisting ? "Replacement includes images, reels and voices. Review the full set before staging it." : "Current references, crops and voice choices stay. Suggestions only add missing references.")</p>
+            <label>Selection instructions (optional)<textarea rows="3" maxlength="12000" @bind="_instructions" @bind:event="oninput" @bind:after="RefreshPlan" disabled="@(Disabled || Working || _active is not null || _pending is not null)" placeholder="For example: use the courtyard environment, prefer her blue outfit reel, and keep the existing voice."></textarea></label>
+        </ChildContent>
+        <Actions>
+            <MudButton Class="ai-assist-action" OnClick="Start" Disabled="@(!CanStart)" Color="Color.Primary" Variant="Variant.Filled"><AiAssistIcon />Suggest references</MudButton>
+            @if (_pending is not null) { <MudButton OnClick="RetryEnqueue" Disabled="@(Disabled || Working)">Retry saving request</MudButton> }
+            @if (_active is not null) { <MudButton OnClick="CancelRequest">Cancel selection request</MudButton> }
+            @if (_job is not null) { <MudButton OnClick="ShowReview" Disabled="Working">Review saved suggestion</MudButton> }
+        </Actions>
+    </TextAssistance>
+    @if (_operationError is not null) { <p role="alert" class="field-error">@_operationError</p> }
+    @if (_job is { } job && (_reviewVisible || job.LocksTarget))
+    {
+        <AiJobProgressView Job="job" Queue="Jobs.View" Progress="Jobs.Progress(job.Id)" />
+        @if (job.CanRetryCaptured) { <MudButton OnClick="ResumeRequest" Disabled="Working">Retry captured request</MudButton> }
+    }
+    @if (_reviewVisible && _job is { } reviewed)
+    {
+        <section class="asset-pick-review" aria-label="Review suggested references">
+            <h3>Suggested references</h3>
+            <AiResultAcknowledgement Observed="@(_observed is { } observed && observed.Id == reviewed.Id ? new[] { observed } : [])" />
+            @if (_history.Count > 1)
+            {
+                <label>Saved selection request<select value="@reviewed.Id" @onchange="ChooseHistory" disabled="@Working">
+                    @foreach (var saved in _history) { <option value="@saved.Id">@saved.CreatedUtc.ToLocalTime().ToString("g") · @saved.State · @saved.Id.ToString()[..8]</option> }
+                </select></label>
+            }
+            @if (_request is { } request)
+            {
+                <p class="field-hint">@(request.ReplaceExisting ? "Replacement proposal" : "Additions only") · @request.Shot.Title</p>
+            }
+            @if (_error is not null) { <p role="alert" class="field-error">@_error</p> }
+            @if (_result is { } result)
+            {
+                <p>@result.Summary</p>
+                @foreach (var need in result.Missing) { <p class="field-hint"><strong>Unmatched / uncertain:</strong> @need</p> }
+                @if (result.Selections.Count == 0) { <p>No references were proposed. Nothing will be removed or replaced.</p> }
+                <div class="asset-pick-choices">
+                    @foreach (var item in result.Selections)
+                    {
+                        var candidate = Candidate(item);
+                        <article class="asset-pick-choice" @key="item.CandidateId">
+                            <label><input type="checkbox" checked="@_checked.Contains(item.CandidateId)" @onchange="e => Toggle(item.CandidateId, e.Value is true)" disabled="@(Working || _staged)" />
+                                <strong>@(candidate is null ? item.CandidateId : Owner(candidate) + " · " + candidate.Name)</strong></label>
+                            @if (candidate is not null)
+                            {
+                                <small>@candidate.Kind @item.VisualMode · @(item.Speaker is null ? "No audio selected" : item.Speaker.Length == 0 ? "Vocalizations / ambient audio" : "Speaker: " + item.Speaker)</small>
+                                @if (candidate.Kind == "Image") { <img src="@($"/media/projects/{Library.ProjectId}/assets/{candidate.AssetId}/images/{candidate.SourceId}")" alt="@candidate.Name" loading="lazy" /> }
+                                <details><summary>Saved description and use guidance</summary><p class="asset-pick-text">@candidate.Description</p><p class="asset-pick-text">@candidate.Guidance</p></details>
+                            }
+                            <p>@item.Reason</p>
+                            @if (!string.IsNullOrWhiteSpace(item.UseHint)) { <p class="field-hint">Intended use: @item.UseHint</p> }
+                        </article>
+                    }
+                </div>
+                @if (_staged) { <p role="status">Suggestions are in the pending reference selection. Review them below, then use Apply changes to save. Cancelling this editor discards the pending changes.</p> }
+                else
+                {
+                    @if (Stale) { <p role="alert" class="field-error">The shot, prompt, catalogue or selection instructions changed. This saved suggestion is still readable; request a new one before staging it.</p> }
+                    @if (_planError is not null) { <p role="alert" class="field-error">@_planError</p> }
+                    @if (_plan is { } plan && !Stale)
+                    {
+                        var resolved = ResolvedReferences.For(plan.Inputs);
+                        <p class="field-hint">After staging: @resolved.Pictures.Count/9 pictures · @plan.Inputs.Videos.Count/3 reels · @resolved.Audio.Count/3 audio inputs.</p>
+                        @foreach (var notice in plan.Notices) { <p class="field-hint">@notice</p> }
+                    }
+                    <MudButton OnClick="Stage" Disabled="@(!CanStage)" Color="Color.Primary" Variant="Variant.Filled">@(_request?.ReplaceExisting == true ? "Stage replacement selection" : "Add checked suggestions")</MudButton>
+                    <p class="field-hint">This only changes the pending selection. It does not rewrite the prompt, save the shot, generate media or build a RefMod.</p>
+                }
+            }
+            <details><summary>Request and raw response</summary><AiTextRequestDetails JobId="reviewed.Id" /><pre class="asset-pick-text">@_raw</pre></details>
+        </section>
+    }
+</details>

@@ -1,0 +1,193 @@
+@implements IAsyncDisposable
+<div class="script-assistant" @ref="_originElement">
+<TextAssistance Inline="true" @ref="_assist" ProjectId="ProjectId" Studio="TextAssistantStudio.Story" Title="Script assistance" Disabled="_applying" ModelLocked="@(_generating || _applying)" SelectionChanged="ModelChanged" Opened="OpenComposerAsync">
+    <ExtraActions><button type="button" @onclick="() => _requestsOpen = true">Requests</button></ExtraActions>
+    <ChildContent>            @if (_loading) { <p role="status">Opening assistant…</p> }
+            else
+            {
+                <div class="script-assistant-compose">
+                    <label for="script-operation">Action<select id="script-operation" @bind:get="Operation" @bind:set="value => _chosenOperation = value" disabled="@(_generating || _applying)">
+                        @if (HasScript) { <option value="Revise">Revise · focused edits</option><option value="Rewrite">Rewrite selected scope</option><option value="Continue">Continue after the target</option> }
+                        <option value="Discuss">Discuss idea</option>
+                        @if (!HasScript || Operation == WritingOperation.Draft) { <option value="Draft">Draft entire script</option> }
+                        @if (!HasScript || Operation == WritingOperation.Outline) { <option value="Outline">Suggest an outline</option> }
+                    </select></label>
+                    <label for="script-scope">Work on<select id="script-scope" @bind:get="_scope" @bind:set="ChooseScopeAsync" disabled="@(_generating || WholeDocumentOperation)"><option value="Document">Whole script</option><option value="Scene">Current scene</option><option value="Act">Current act</option><option value="Passage">Selected passage</option></select></label>
+                    <p class="field-hint assistant-target" role="status">@(WholeDocumentOperation ? "Whole script" : TargetDescription)</p>
+                    @if (!WholeDocumentOperation) { <button class="capture-target" disabled="@_generating" @onclick="() => ChooseScopeAsync(_scope)">@(_scope == ScriptScope.Passage ? "Use selected passage" : _scope == ScriptScope.Document ? "Use whole script" : $"Use current {_scope.ToString().ToLowerInvariant()}")</button> }
+                    <label for="script-instructions">Instructions<textarea id="script-instructions" @bind="InstructionsValue" @bind:event="oninput" rows="5" placeholder="Describe what you want to change…"></textarea></label>
+                    <p class="context-estimate">Current script + instructions@(_attachedDiscussion.Count > 0 ? $" + {_attachedDiscussion.Count} attached discussions" : "") · ≈@EstimatedTokens.ToString("N0") input tokens</p>
+                    @if (_runs.Any(r => r.Operation == WritingOperation.Discuss && r.Status == AssistantRunStatus.Completed))
+                    {
+                        <details class="discussion-attachments"><summary>Attach discussion</summary>
+                        @foreach (var discussion in _runs.Where(r => r.Operation == WritingOperation.Discuss && r.Status == AssistantRunStatus.Completed))
+                        { <label><input type="checkbox" checked="@_attachedDiscussion.Contains(discussion.Id)" @onchange="e => Attach(discussion.Id, e.Value is true)" />@discussion.CreatedUtc.ToLocalTime().ToString("g") · @discussion.Instructions</label> }
+                        </details>
+                    }
+                    @foreach (var attached in _runs.Where(r => _attachedDiscussion.Contains(r.Id)))
+                    { <button class="attached-context" @onclick="() => Attach(attached.Id, false)" aria-label="Remove attached discussion @attached.CreatedUtc.ToLocalTime().ToString("g")">Discussion · @attached.CreatedUtc.ToLocalTime().ToString("g") ×</button> }
+                    @if (Operation is WritingOperation.Draft or WritingOperation.Outline && Document.Blocks.Any(b => !string.IsNullOrWhiteSpace(b.Text))) { <p class="field-hint">This proposes replacing the whole script. You review the result before applying it.</p> }
+                </div>
+                @if (HasScript) { <details class="assistant-start-over"><summary>Start over…</summary><p>Drafting or accepting an outline replaces the entire script. You review it before applying.</p><button disabled="@_generating" @onclick="() => _chosenOperation = WritingOperation.Draft">Draft replacement</button><button disabled="@_generating" @onclick="() => _chosenOperation = WritingOperation.Outline">Outline replacement</button></details> }
+            }
+</ChildContent>
+    <Actions><TextRequestAction Primary="true" Label="@ActionLabel" Request="ScriptPresentation" Preparing="@(_submitting || _modelPreparing)"
+        Disabled="@(!CanGenerate || Operation == WritingOperation.Continue && _scope == ScriptScope.Passage)"
+        OnStart="() => StartAsync(Operation)" OnNew="OpenComposerAsync" OnReview="InspectScript" OnCancel="Cancel" /></Actions>
+    <Status>        @if (_error is not null && _reviewId is null) { <p class="generation-error" role="alert">@_error</p> }
+        @if (_historyError && _reviewId is null) { <MudButton OnClick="RetryHistoryAsync">Retry saving history</MudButton> }
+        @if (_pendingSubmission is not null) { <MudButton OnClick="RetryEnqueueAsync" Disabled="_submitting">Retry saving request</MudButton> }
+</Status>
+</TextAssistance>
+</div>
+<AiAssistDialog Visible="_requestsOpen" VisibleChanged="value => _requestsOpen = value" Title="Script requests"><ChildContent>            <div class="script-runs" aria-label="Discussion and script proposals" @ref="_requestsOrigin">
+                @foreach (var run in VisibleRuns)
+                {
+                    <article class="assistant-run" @key="run.Id">
+                        <div class="run-heading"><strong>@run.Operation · @RunStatus(run)</strong><span>@run.CreatedUtc.ToLocalTime().ToString("g")</span></div>
+                        <p class="run-meta">@run.Target.Name@(run.CorrectedFromRunId is null ? "" : " · Pasted JSON")</p>
+                        <p class="run-instructions">@(run.Instructions.Length > 160 ? run.Instructions[..160] + "…" : run.Instructions)</p>
+                        <MudButton OnClick="() => Review(run.Id)" Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small">@(RunStatus(run) == "Applied" ? "View changes" : "Open response")</MudButton>
+                        <MudButton OnClick="() => Reuse(run)" Size="Size.Small" Disabled="_generating">Reuse instructions</MudButton>
+                    </article>
+                }
+                @if (!_runs.Any()) { <p class="field-hint">Your discussions and proposals will be kept here.</p> }
+                @if (RequestPages > 1) { <div class="shots-actions"><button disabled="@(_requestPage == 0)" @onclick="() => _requestPage--">Previous</button><span>@(_requestPage + 1) / @RequestPages</span><button disabled="@(_requestPage + 1 >= RequestPages)" @onclick="() => _requestPage++">Next</button></div> }
+            </div>
+</ChildContent></AiAssistDialog>
+
+<InlineDialog Visible="@(_reviewId is not null)" VisibleChanged="ReviewVisibilityChanged" Options="ReviewOptions"
+           Class="script-review-dialog" TitleClass="script-review-title" ContentClass="script-review-content" ActionsClass="script-review-actions">
+    <TitleContent>
+        <div class="script-review-heading">
+            <div><p class="eyebrow">ASSISTANT PROPOSAL</p><h2>Review script proposal</h2></div>
+        </div>
+    </TitleContent>
+    <DialogContent>
+        @* Keep the header control inside MudDialog's focus trap. *@
+        <MudIconButton Class="review-close dialog-close" Icon="@Icons.Material.Outlined.Close" OnClick="CloseReview" Disabled="@(_applying || _savingJson)" aria-label="Close review" />
+        @if (ReviewRun is { } run)
+        {
+            <lumibelle.Components.AI.AiResultAcknowledgement Observed="@(_observedScriptJobs.Where(j => j.Id == run.JobId).ToArray())" />
+            @if (_activeJob is { } active && active.Id == run.JobId)
+            { <lumibelle.Components.AI.AiJobProgressView Job="active" Queue="Jobs.View" Progress="Jobs.Progress(active.Id)" /> }
+            <details class="request-details"><summary>Request details</summary><p>Saved revision @run.SourceRevision · @run.Target.Name · @run.Backend · @run.Model</p><pre class="submitted-input">@(_requestDetails ?? "The exact input is unavailable for this historical local proposal.")</pre></details>
+            var target = _reviewTarget ?? run.Target;
+            var matches = ScriptStructure.Matches(Document, target);
+            var historical = run.Applied || Document.AppliedProposalIds.Contains(run.Id);
+            var hasOriginal = target.OriginalBlocks.Any(b => !string.IsNullOrWhiteSpace(b.Text));
+            @if (_editingJson)
+            {
+                <section class="script-json-editor" aria-label="Correct screenplay JSON">
+                    <h3>Correct screenplay JSON</h3>
+                    <p id="script-json-help" class="field-hint">@(run.EditFormat == 1 ? "Paste or edit the focused-edit JSON object." : "Paste or edit a complete screenplay array.") Reviewing saves a separate proposal and keeps the original response. No model request is sent.</p>
+                    <label for="corrected-script-json">Screenplay JSON</label>
+                    <textarea id="corrected-script-json" @bind="JsonDraft" @bind:event="oninput" rows="18" spellcheck="false" disabled="@_savingJson" aria-describedby="script-json-help script-json-error"></textarea>
+                    <div id="script-json-error" role="alert">@if (_jsonError is { } jsonError) { <p class="writing-error">@jsonError</p> }</div>
+                    <details><summary>JSON format</summary>
+                        <pre class="raw-response">@(run.EditFormat == 1 ? ScriptEdits.Instructions : "[{\"kind\":\"Action\",\"spans\":[{\"text\":\"A kettle whistles.\"}]}]")</pre>
+                        <p class="field-hint">Kinds: Act, Scene, Action, Character, Dialogue, Parenthetical, Transition. Use Character for speaker names, Dialogue for spoken words, and Parenthetical for dialogue directions. Each span needs text; bold and italic are optional true/false values.</p>
+                    </details>
+                </section>
+            }
+            else if (run.Status == AssistantRunStatus.Running)
+            {
+                <section class="script-response-working" aria-label="Response in progress">
+                    <h3>@run.Operation · @RunStatus(run)</h3><p>@run.Target.Name · @run.Backend · @run.Model</p>
+                    @if (string.IsNullOrEmpty(run.Output))
+                    { <p class="field-hint">The response will appear here as it arrives. Some models take time before sending their first text.</p> }
+                    else
+                    { <details><summary>Response so far · @run.Output.Length.ToString("N0") characters</summary><pre class="raw-response">@run.Output</pre></details><p class="field-hint">Still writing. You can review and apply the screenplay when the complete response has been checked.</p> }
+                </section>
+            }
+            else if (run.Error is not null || run.Proposal is null)
+            {
+                <section aria-label="Assistant response"><h3>@run.Operation · @RunStatus(run)</h3><p>@run.Target.Name · @ResponseSource(run)</p>
+                    @if (run.Error is not null) { <p role="alert">@run.Error</p> }
+                    @if (_responseJsonError is { } detail && run.Error?.Contains(detail, StringComparison.Ordinal) != true) { <p role="alert">@detail</p> }
+                    @if (run.Operation == WritingOperation.Discuss && run.Error is null) { <MarkdownView Text="@run.Output" /><details><summary>Raw response</summary><pre class="raw-response">@run.Output</pre></details> }
+                    else { <pre class="raw-response">@run.Output</pre> }
+                </section>
+            }
+            else
+            {
+            <section class="script-review" aria-label="Script proposal">
+                <div class="script-review-meta">
+                    <div><strong>@run.Operation · @target.Name</strong><p>@ResponseSource(run)</p></div>
+                    @if (hasOriginal)
+                    {
+                        <div class="review-view-switch" role="group" aria-label="Review view">
+                            <button @onclick="() => _compare = false" aria-pressed="@(!_compare ? "true" : "false")">Read proposal</button>
+                            <button @onclick="() => _compare = true" aria-pressed="@(_compare ? "true" : "false")">Compare changes</button>
+                        </div>
+                    }
+                </div>
+                @if (_error is not null) { <div class="writing-error" role="alert">@_error</div> }
+                @if (_historyError) { <MudButton OnClick="RetryHistoryAsync">Retry saving history</MudButton> }
+                @if (historical) { <p class="review-notice">Historical comparison: captured before and applied writing. This is not the current script.</p> }
+                else if (!matches)
+                {
+                    <div class="review-notice" role="alert"><p>The target changed or was deleted. Request new changes against the current script. The saved response remains available for inspection.</p><MudButton OnClick="RetargetAsync" Disabled="_applying">@(run.EditFormat == 1 ? "Request fresh changes" : "Review against current target")</MudButton></div>
+                }
+                else if (run.SourceFingerprint != ScriptStructure.ContextFingerprint(Document)) { <p class="review-notice">Other script content changed since this request. Check the proposal in its current context.</p> }
+                @if (_reviewTarget is not null && !historical) { <p class="review-notice">You selected a new target for this proposal. Compare it carefully before applying.</p> }
+                @if (run.Edits is { } edits)
+                {
+                    @foreach (var note in edits.NormalizationNotes ?? Array.Empty<string>())
+                    { <p class="review-notice script-edit-normalization" role="status">@note</p> }
+                    <details class="edit-operations"><summary>@edits.Operations.Count focused @(edits.Operations.Count == 1 ? "change" : "changes")</summary><ul>
+                        @foreach (var edit in edits.Operations) { <li>@EditDescription(run, edit)</li> }
+                    </ul></details>
+                }
+                @if (_compare)
+                {
+                    <ScreenplayComparisonView Target="ComparisonTarget(run, target)" Proposal="run.Proposal!" Operation="run.Operation" Historical="historical" />
+                }
+                else
+                {
+                    <div class="script-review-pages"><section class="review-page proposed-page" aria-label="Proposed script"><h3>@(historical ? "Applied writing at that time" : run.Operation == WritingOperation.Continue ? "Proposed addition" : "Proposed script")</h3><ScriptPreview Blocks="run.Proposal!" /></section></div>
+                }
+                <details><summary>@(run.CorrectedFromRunId is null ? "Raw response" : "Pasted JSON")</summary><pre class="raw-response">@run.Output</pre></details>
+            </section>
+            }
+        }
+    </DialogContent>
+    <DialogActions>
+        @if (ReviewRun is { } run)
+        {
+            var matches = ScriptStructure.Matches(Document, _reviewTarget ?? run.Target);
+            var unresolved = !run.Applied && !Document.AppliedProposalIds.Contains(run.Id) && !run.Rejected;
+            // An errored, failed, or interrupted response is never applicable, but the
+            // author still needs to retire it instead of leaving Needs attention forever.
+            var applicable = run.Status == AssistantRunStatus.Completed && run.Error is null && run.Proposal is not null;
+            @if (_editingJson)
+            {
+                <span class="review-save-hint">Your script changes only when you apply.</span>
+                <MudButton OnClick="CancelJsonEdit" Disabled="_savingJson">Cancel JSON edit</MudButton>
+                <MudButton OnClick="ReviewJsonAsync" Disabled="@(_savingJson || string.IsNullOrWhiteSpace(JsonDraft))" Color="Color.Primary" Variant="Variant.Filled">@(_savingJson ? "Saving proposal…" : "Review corrected JSON")</MudButton>
+            }
+            else
+            {
+            <span class="review-save-hint">@(_applying ? "Applying proposal…" : "Your script changes only when you apply.")</span>
+            <MudButton OnClick="CloseReview" Disabled="@(_applying || _savingJson)">Close</MudButton>
+            @if (run.Status != AssistantRunStatus.Running && run.Operation != WritingOperation.Discuss && unresolved)
+            {
+                <MudButton OnClick="EditJson" Disabled="@(_applying || _savingJson)" Variant="Variant.Outlined">Paste / edit JSON</MudButton>
+                @if (CanReprocessSavedResponse(run))
+                {
+                    <MudButton OnClick="ReprocessSavedResponseAsync" Disabled="@(_applying || _savingJson)" Variant="Variant.Outlined">@(_savingJson ? "Reprocessing…" : "Reprocess saved response")</MudButton>
+                    <span class="field-hint">Reprocessing checks the saved JSON locally and saves a separate proposal for review. No model request is sent.</span>
+                }
+            }
+            @if (_activeJob is { } active && active.Id == run.JobId) { <MudButton OnClick="Cancel">Cancel request</MudButton> }
+            @if (applicable && unresolved)
+            {
+            <MudButton OnClick="() => RejectAsync(run)" Disabled="@(_applying || _savingJson)">Discard</MudButton>
+            <MudButton OnClick="() => ApplyAsync(run)" Disabled="@(_applying || _savingJson || !matches || _historyError)" Color="Color.Primary" Variant="Variant.Filled">@(run.Operation is WritingOperation.Draft or WritingOperation.Outline && TargetHasContent(run) ? "Replace entire script" : "Apply changes")</MudButton>
+            }
+            else if (unresolved && run.Status != AssistantRunStatus.Running && run.Operation != WritingOperation.Discuss)
+            { <MudButton OnClick="() => RejectAsync(run)" Disabled="@(_applying || _savingJson)">Dismiss</MudButton> }
+            }
+        }
+    </DialogActions>
+</InlineDialog>

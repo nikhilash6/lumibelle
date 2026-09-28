@@ -1,0 +1,198 @@
+@inherits ProjectAwareComponent
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+@inject IReferenceVideoStore ReelMedia
+@inject IAiSettingsStore AiSettings
+@inject IServiceProvider ReferenceServices
+<section class="manual-references" aria-label="@(ReelAuthoring ? "Reel references" : AllowReels ? "Setup references" : AllowInference ? "Composition image references" : "Shot image references")">
+    <ImageReviewFocus Target="@_actionFocus" Handled="() => _actionFocus = null" />
+    <ReferencePicker Library="Library" IncludeReels="AllowReels" Disabled="_busy" OnlyKind="@(_replacing is not null ? "Images" : ReelTarget is not null ? "Reels" : null)"
+        Maximum="@(ReelTarget is not null ? 0 : _replacing is not null ? 1 : 9 - ResolvedReferences.For(_draft).Pictures.Count)" Excluded="Assigned" ImagePicked="Add"
+        MaximumReels="@(_replacing is not null ? 0 : ReelTarget is not null ? 1 : 3 - _draft.Videos.Count)" ExcludedVideoMedia="@_draft.Videos.Select(v => v.Media.Id).ToArray()" ReferencePicked="PickReference"
+        ReelAction="@(ReelTarget is { } target ? $"Replace Video {_draft.Videos.FindIndex(v => v.Id == target) + 1}" : null)"
+        SelectedCount="@(_draft.Images.Count + (AllowReels ? _draft.Videos.Count : 0))" @bind-SelectedTab="_selectedTab">
+        <Toolbar>
+            @if (AssistPicking && AllowReels && AllowInference && !ReelAuthoring)
+            {
+                <AssetPickAssistant @key="_draft.Id" Shot="_draft" Library="Library" Prompt="@ReferencePrompt"
+                    DirectingNotes="@ReferenceDirectingNotes" Disabled="_busy" RequestedJobId="RequestedAssetPickJobId"
+                    Staged="StageAssistedReferences" />
+            }
+            @if (AllowReels && (CopySources.Count > 0 || PreviousCopySource is not null))
+            {
+                <div class="reference-copy-toolbar">
+                    <label>Copy references from<select @key="_copyVersion" aria-label="Copy references from" @onchange="CopyFromChanged" disabled="@_busy">
+                        <option value="">Choose a shot to replace these references…</option>
+                        @if (PreviousCopySource is not null) { <option value="previous">Previous shot · @PreviousCopySource.Title</option> }
+                        @foreach (var source in CopySources.Where(s => PreviousCopySource is null || s.Id != PreviousCopySource.Id)) { <option value="@source.Id">@source.Title</option> }
+                    </select></label>
+                </div>
+            }
+        </Toolbar>
+        <BrowserNotice>
+            @if (_replacing is not null) { <p role="status">Choose the replacement image.<button @onclick="() => _replacing = null">Cancel replacement</button></p> }
+            @if (_replacingVideo is not null) { <p role="status">Choose the replacement reel.<button @onclick="() => _replacingVideo = null">Cancel replacement</button></p> }
+        </BrowserNotice>
+        <Selection>
+            <h3>@(AllowReels ? "Images" : "Selected references") · @_draft.Images.Count/9</h3>
+            @if (_draft.Images.Count == 0) { <p>Choose images from the library. Their order becomes the Picture numbering in your prompt.</p> }
+            <ol class="manual-reference-list">
+                @foreach (var binding in _draft.Images)
+                {
+                    var number = _draft.Images.IndexOf(binding) + 1;
+                    <ReferenceSelectionRow @key="binding.Id" data-reference-id="@binding.Id" Label="@($"Picture {number}")"
+                        Title="@(AllowReels ? $"<Picture {number}>" : $"Picture {number}")" Name="@binding.Name" Status="@($"{Role(binding)} · {(binding.Crop is null ? "Full image" : "Cropped")}")"
+                        Disabled="_busy" First="@(number == 1)" Last="@(number == _draft.Images.Count)" MoveUp="() => Move(binding, -1)" MoveDown="() => Move(binding, 1)" Remove="() => Remove(binding)">
+                        <Thumbnail><CropThumbnail Url="@Url(binding)" Width="@(Image(binding)?.Width ?? 0)" Height="@(Image(binding)?.Height ?? 0)" Crop="binding.Crop" Label="@($"Picture {number}")" Failed="() => _missing.Add(binding.Id)" /></Thumbnail>
+                        <Actions>
+                            <button type="button" class="reference-crop-button @(binding.Crop is not null ? "is-active" : "")" aria-label="@($"Picture {number}: Crop image")" title="Crop image" aria-haspopup="dialog" disabled="@(_busy || Image(binding) is null || _missing.Contains(binding.Id))" @onclick="() => _cropTarget = binding.Id"><MudIcon Icon="@Icons.Material.Outlined.Crop" Size="Size.Small" aria-hidden="true" /></button>
+                            <button type="button" class="reference-settings-button @(_expanded == binding.Id ? "is-active" : "")" aria-label="@($"Picture {number}: Reference settings")" title="Reference use and guidance" aria-expanded="@(_expanded == binding.Id ? "true" : "false")" disabled="@_busy" @onclick="() => _expanded = _expanded == binding.Id ? null : binding.Id"><MudIcon Icon="@Icons.Material.Outlined.Tune" Size="Size.Small" aria-hidden="true" /></button>
+                        </Actions>
+                        <ChildContent>
+                        @if (Issue(binding) is { } issue) { <p class="reference-issue" role="status">@issue</p> }
+                        @if (RestoreTrashedImage is not null && Trashed(binding) is { } trashed) { <p class="reference-trash-restore">In Trash · @trashed.Remaining(Now) <MudButton OnClick="() => Restore(binding, trashed)" Disabled="_busy" Variant="Variant.Outlined" Size="Size.Small">Restore image</MudButton></p> }
+                        @if (_expanded == binding.Id)
+                        {
+                            <fieldset class="reference-fields" disabled="@_busy">
+                                <legend class="sr-only">Edit Picture @number</legend><button @onclick="() => { _replacing = binding.Id; _replacingVideo = null; _selectedTab = false; }">Replace image</button>
+                                @if (AllowInference) { <label>AI use hint<select aria-label="AI use hint" @bind="binding.AiUseHint">@foreach (var hint in new[] { "Auto", "Identity", "Clothing", "Setting", "Prop", "Style", "Framing", "First frame", "Last frame" }) { <option>@hint</option> }</select></label><p class="field-hint">Guides the next AI composition. Your direction and prompt take precedence.</p> }
+                                else {
+                                <ReferenceUseSelect Image="binding" Shot="_draft" Changed="RoleChanged" AllowInference="AllowInference" />
+                                @if (ReferenceSetups.IsAnchor(binding))
+                                {
+                                    <p class="field-hint">Whole-frame guidance for the @(binding.Use == ShotImageUse.FirstFrame ? "opening" : "ending") composition. Ref2VA may vary from the supplied frame; this is not an exact frame lock.</p>
+                                }
+                                else
+                                {
+                                    <label>Character<select aria-label="Character" value="@binding.RepresentsId" @onchange="LinkCharacter"><option value="">No character link</option>@foreach (var c in ShotReferences.Characters(_draft)) { <option value="@c.Id">@c.Name</option> }</select></label>
+                                    @if (CharacterAsset(binding) is { } asset && !ShotReferences.Characters(_draft).Any(c => string.Equals(c.Name, asset.Name, StringComparison.OrdinalIgnoreCase)))
+                                    { <button @onclick="() => AddCharacter(asset)">Add @asset.Name to this shot and link</button> }
+                                    <p class="field-hint">New character links start as identity references; they do not assign an outfit.</p>
+                                    <details><summary>Character looks and transitions</summary><ShotAppearanceEditor Shot="_draft" Library="Library" Changed="characters => _draft.Characters = characters" /></details>
+                                }
+                                @if (Image(binding) is { } image && image.LookId != binding.LookId)
+                                { <button @onclick="() => binding.LookId = image.LookId">Use current image assignment</button> }
+                                }
+                                <section class="reference-guidance">
+                                    <h4>What to preserve · @(Guidance(binding).Override is null ? "Inherited" : "Local override")</h4>
+                                    @if (ReferenceSetups.IsAnchor(binding)) { <p class="field-hint">Anchors use image guidance only. Asset and character/look instructions are excluded.</p> }
+                                    @if (Guidance(binding).Override is null)
+                                    { <p class="preservation-text">@(Guidance(binding).Effective.Length == 0 ? "No shared guidance yet." : Guidance(binding).Effective)</p><button @ref="_customizeButton" data-guidance-customize @onclick="Customize">Customize for this @ContextName</button> }
+                                    else
+                                    { <label>@(AllowInference ? "Composition" : "Shot") preservation override<textarea @ref="_guidanceInput" rows="4" maxlength="50000" @bind="binding.PreservationOverride" @bind:event="oninput"></textarea></label><button @onclick="ResetGuidance">Reset to shared defaults</button> }
+                                    <a href="@(ProjectLink(Library.ProjectId, $"/assets?assetId={binding.AssetId}"))" target="_blank" rel="noopener">Open Assets ↗</a>
+                                </section>
+                            </fieldset>
+                        }
+                        </ChildContent>
+                    </ReferenceSelectionRow>
+                }
+            </ol>
+            @if (AllowReels) {
+                <h3 class="reel-selection-heading">Reels · @_draft.Videos.Count/3</h3>
+                @if (_draft.Videos.Count == 0) { <p>Choose an asset reel. Its guidance will be copied into this @ContextName.</p> }
+                <ol class="manual-reference-list video-reference-list">
+                @foreach (var v in _draft.Videos) {
+                    var index = _draft.Videos.IndexOf(v);
+                    <ReferenceSelectionRow @key="v.Id" data-video-reference-id="@v.Id" Label="@($"Video {index + 1}")" Title="@v.Name"
+                        Name="@ResolvedReferences.For(_draft).Label(v)" Status="@($"{VideoResolutions.Badge(v.Media)} · {v.Media.Duration:0.###} s · {ReelVoiceDefaults.Summary(_draft, v, Library)}")"
+                        Disabled="_busy" First="@(index == 0)" Last="@(index == _draft.Videos.Count - 1)" MoveUp="() => MoveVideo(index, -1)" MoveDown="() => MoveVideo(index, 1)" Remove="() => RemoveVideo(v)">
+                        <Thumbnail><ReferenceVideoThumbnail ProjectId="Library.ProjectId" MediaId="v.Media.Id" /></Thumbnail>
+                        <Actions>
+                            <button type="button" class="reference-settings-button @(_expanded == v.Id ? "is-active" : "")" aria-label="@($"Video {index + 1}: Reference settings")" title="Reel reference settings" aria-expanded="@(_expanded == v.Id ? "true" : "false")" disabled="@_busy" @onclick="() => _expanded = _expanded == v.Id ? null : v.Id"><MudIcon Icon="@Icons.Material.Outlined.Tune" Size="Size.Small" aria-hidden="true" /></button>
+                            @if (v.EffectiveVisuals is ReelVisuals.Keyframes or ReelVisuals.RefMod) { <button type="button" aria-label="@($"Video {index + 1}: Manage keyframes")" title="Manage keyframes and crops" aria-haspopup="dialog" disabled="@_busy" @onclick="() => _keyframeBinding = v"><MudIcon Icon="@Icons.Material.Outlined.Crop" Size="Size.Small" aria-hidden="true" /></button> }
+                            <button type="button" class="@(_swapVideo == v.Id ? "is-active" : "")" aria-label="@($"Video {index + 1}: Replace reel")" title="Replace with another reel of this asset, such as a higher-resolution version" aria-expanded="@(_swapVideo == v.Id ? "true" : "false")" disabled="@_busy" @onclick="() => ToggleSwap(v)"><MudIcon Icon="@Icons.Material.Outlined.SwapHoriz" Size="Size.Small" aria-hidden="true" /></button>
+                        </Actions>
+                        <ChildContent>
+                        @if (_swaps.TryGetValue(v.Id, out var swap) && LibraryReel(swap.From) is { } swappedFrom && LibraryReel(swap.To) is { } swappedTo) {
+                            <div class="reel-swap-result">
+                                <p role="status">Uses @swappedTo.Name · @VideoResolutions.Badge(swappedTo) instead of @swappedFrom.Name · @VideoResolutions.Badge(swappedFrom). Its name, guidance, keyframes and voice carry over.</p>
+                                @if (_swapOthers.GetValueOrDefault(v.Id) is > 0 and var others) {
+                                    <label class="check-row"><input type="checkbox" checked="@swap.OtherShots" disabled="@_busy" @onchange="e => SwapElsewhere(v, e.Value is true)" />Also replace it in @(others == 1 ? "1 other shot" : $"{others} other shots")</label>
+                                }
+                            </div>
+                        }
+                        @if (_swapVideo == v.Id) {
+                            var choices = SwapChoices(v); var current = Library.Reels.FirstOrDefault(r => r.Media.Id == v.Media.Id);
+                            <section class="reel-swap" aria-label="@($"Replace Video {index + 1}")">
+                                <p class="field-hint">Choose a version below or any reel in the reference list. A reel of the same asset keeps this reference's name, guidance, visuals and voice; keyframes move to the same moments.</p>
+                                @if (choices.Count == 0) { <p>No other reels of this asset.</p> }
+                                <ul class="reel-swap-choices">
+                                @foreach (var choice in choices) {
+                                    <li @key="choice.Id">
+                                        <span class="reel-swap-thumb"><ReferenceVideoThumbnail ProjectId="Library.ProjectId" MediaId="choice.Media.Id" /></span>
+                                        <span><strong>@choice.Name</strong><small>@VideoResolutions.Badge(choice) · @LookName(choice) · @choice.Media.Duration.ToString("0.###") s@(RegeneratedFrom(choice, current) ? " · Regenerated from this reel" : "")</small></span>
+                                        <button type="button" disabled="@_busy" aria-label="@($"Use {choice.Name} · {VideoResolutions.Badge(choice)}")" @onclick="() => Swap(v, choice)">Use</button>
+                                    </li>
+                                }
+                                </ul>
+                                <button type="button" class="reel-swap-browse" disabled="@_busy" @onclick="() => _selectedTab = false">Browse all reels</button>
+                            </section>
+                        }
+                        @if (v.EffectiveVisuals == ReelVisuals.FullReel && v.Media.Duration - ReferenceVideos.EffectiveSeconds(v.Media, _draft) > .001) { <p class="reference-issue">H3 uses the first @ReferenceVideos.EffectiveSeconds(v.Media, _draft).ToString("0.###") s. Later views, including part of a camera turn or route, may be excluded.</p> }
+                        @if (_expanded == v.Id) {
+                            <fieldset class="reference-fields" disabled="@_busy"><legend class="sr-only">Edit Video @(index + 1)</legend>
+                                <video controls preload="metadata" poster="@ReferenceVideos.ThumbnailUrl(Library.ProjectId, v.Media.Id)" src="@ReferenceVideos.Url(Library.ProjectId, v.Media.Id)" aria-label="Preview Video @(index + 1)"></video>
+                                @if (!v.Media.HasAudio) { <p>Silent clip</p> }
+                                @if (ReelAuthoring) { <p class="field-hint">Choose how this reel supplies visual references. Audio is chosen separately in the reel recipe.</p> }
+                                <label>Visuals<select aria-label="Visuals" value="@v.EffectiveVisuals" @onchange="e => ChangeVisuals(v, e)"><option value="Keyframes">Keyframes</option><option value="FullReel">Full reel</option><option value="RefMod">Selected-keyframe RefMod · Experimental</option>@if (!ReelAuthoring) { <option value="None">None</option> }</select></label>
+                                @if (Library.Assets.FirstOrDefault(a => a.Id == CharacterVoices.Owner(v, Library)) is { } reelOwner) {
+                                    <p class="field-hint">Asset default: @ReelUsageDefaults.Label(ReelUsageDefaults.Initial(reelOwner)). Visuals above applies only to this reference.</p>
+                                    <button type="button" @onclick="() => ChangeVisuals(v, new ChangeEventArgs { Value = ReelUsageDefaults.Initial(reelOwner).ToString() })">Use asset default</button>
+                                }
+                                @if (v.EffectiveVisuals is ReelVisuals.Keyframes or ReelVisuals.RefMod) {
+                                    <button @onclick="() => _keyframeBinding = v">Manage keyframes…</button>
+                                    @if (Library.Reels.FirstOrDefault(r => r.Media.Id == v.Media.Id)?.Keyframes is { } defaults) { <button @onclick="() => v.Keyframes = ShotCopy.Of(defaults)">Use saved reel keyframes</button> }
+                                    <div class="selected-keyframes">@foreach (var picture in ResolvedReferences.For(_draft).Pictures.Where(p => p.Reel == v)) {
+                                        <div><CropThumbnail MeasureImage="true" Url="@ReferenceVideos.FrameUrl(Library.ProjectId, picture.Keyframe!.Frame)" Label="@($"Picture {picture.Number}")" Width="v.Media.Width" Height="v.Media.Height" Crop="picture.Keyframe.Crop" /><small>@($"<Picture {picture.Number}>") · @picture.Keyframe.Frame.Seconds.ToString("0.###") s</small></div>
+                                    }</div>
+                                }
+                                @if (v.EffectiveVisuals == ReelVisuals.RefMod) {
+                                    <section class="refmod-automatic" aria-label="Automatic RefMod preparation">
+                                        <p>@ReelRefMods.Summary(v)</p>
+                                        <p class="field-hint">Apply changes to keep the selected frames and crops. Generation builds or reuses the RefMod automatically; no separate build is needed. New references use a 640 × 640 fitted and padded canvas without an extra cover crop; existing references retain their saved canvas. Voice stays a separate Audio input.</p>
+                                        <div class="selected-keyframes">@foreach (var frame in v.Keyframes?.Frames ?? []) {
+                                            <div><CropThumbnail MeasureImage="true" Url="@ReferenceVideos.FrameUrl(Library.ProjectId, frame.Frame)" Label="RefMod source angle" Width="v.Media.Width" Height="v.Media.Height" Crop="frame.Crop" /><small>Angle @(v.Keyframes!.Frames.IndexOf(frame) + 1) · @frame.Frame.Seconds.ToString("0.###") s</small></div>
+                                        }</div>
+                                    </section>
+                                }
+                                <label>Name<input @bind="v.Name" @bind:event="oninput" maxlength="500" /></label>
+                                <label>Use guidance<textarea @bind="v.Description" @bind:event="oninput" maxlength="20000" rows="4"></textarea></label>
+                                <p class="field-hint">Compose inspects selected keyframes and RefMod source stills. For full reels it uses this guidance without inspecting video or audio.</p>
+                                @if (!ReelAuthoring && !ManagedVoice(v)) {
+                                <label class="soundtrack-choice"><input type="checkbox" @bind="v.UseSoundtrack" disabled="@(!v.Media.HasAudio)" />Use audio</label>
+                                @if (v.UseSoundtrack && v.EffectiveVisuals != ReelVisuals.FullReel) {
+                                    <div class="reel-audio-excerpt"><label>Audio start (seconds)<input type="number" min="0" step="0.01" value="@N(ResolvedReferences.Excerpt(v).Start)" @onchange="e => AudioChanged(v, e, true)" /></label><label>Audio duration (seconds)<input type="number" min="1" max="15" step="0.01" value="@N(ResolvedReferences.Excerpt(v).Duration)" @onchange="e => AudioChanged(v, e, false)" /></label></div>
+                                    <ReelAudioPreview ProjectId="Library.ProjectId" Reel="v" />
+                                }
+                                @if (v.UseSoundtrack) { <label>Dialogue speaker (optional)<select @bind="v.Speaker"><option value="">No speaker mapping</option>@foreach (var speaker in _draft.Dialogue.Select(d => d.Speaker).Distinct(StringComparer.OrdinalIgnoreCase)) { <option>@speaker</option> }</select></label> }
+                                } else if (!ReelAuthoring) { <p class="field-hint">Voice: @CharacterVoices.Label(_draft.CharacterVoices?.FirstOrDefault(c => c.AssetId == v.OwnerAssetId)) · Change under Character voices below.</p> }
+                                <button @onclick="() => CopyUsage(index)">Copy usage snippet</button>
+                                <button @onclick="() => { _replacingVideo = v.Id; _replacing = null; _selectedTab = false; }">Replace reel</button>
+                            </fieldset>
+                        }
+                        </ChildContent>
+                    </ReferenceSelectionRow>
+                }
+                </ol>
+                @if (!ReelAuthoring) { <CharacterVoiceEditor Shot="_draft" Library="Library" Disabled="_busy" Changed="() => { _reelVoiceNotice = null; StateHasChanged(); }" /> }
+            }
+        </Selection>
+        <Footer>
+        @if (_reelVoiceNotice is not null) { <p role="status" class="reel-voice-notice">@_reelVoiceNotice</p> }
+        @if (_copyNotice is not null) { <p role="status">@_copyNotice</p> }
+        @if (_error is not null) { <p role="alert">@_error</p> }
+        <span role="status">@ResolvedReferences.For(_draft).Pictures.Count/9 pictures @(AllowReels ? $"· {_draft.Videos.Count}/3 reels" : "") · @ResolvedReferences.For(_draft).Audio.Count/3 audio · @(_preparingFrames ? "Preparing reference images…" : _busy ? "Saving…" : "Changes apply together")</span>
+        <MudButton Disabled="@(_busy && !_preparingFrames)" OnClick="CancelDialog">Cancel</MudButton>
+        <MudButton Disabled="_busy" OnClick="Apply" Color="Color.Primary" Variant="Variant.Filled">Apply changes</MudButton>
+        </Footer>
+    </ReferencePicker>
+</section>
+
+<InlineDialog Visible="_keyframeBinding is not null" Options="@(new DialogOptions { MaxWidth = MaxWidth.ExtraLarge, FullWidth = true, CloseOnEscapeKey = false, BackdropClick = false })" Class="reel-keyframes-dialog" Title="@($"Manage keyframes for this {(ReelAuthoring ? "reel" : "setup")}")"><DialogContent>
+@if (_keyframeBinding is { } editReel) { <ReelKeyframeEditor @key="editReel.Id" ProjectId="Library.ProjectId" Media="editReel.Media" Initial="editReel.Keyframes" Applied="ApplyKeyframes" Cancelled="() => _keyframeBinding = null" SaveLabel="Apply keyframes" SaveImage="SaveImage" ImageSaved="ImageSaved" /> }
+</DialogContent></InlineDialog>
+
+@if (_draft.Images.FirstOrDefault(b => b.Id == _cropTarget) is { } cropTarget && Image(cropTarget) is { } cropMedia) {
+    <ImageInputCropDialog @key="cropTarget.Id" Label="@($"Picture {_draft.Images.IndexOf(cropTarget) + 1}")" Url="@Url(cropTarget)" Width="cropMedia.Width" Height="cropMedia.Height" InitialCrop="cropTarget.Crop" Applied="ApplyCrop" Cancelled="CloseCrop" />
+}

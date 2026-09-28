@@ -1,0 +1,18 @@
+[
+  {
+    "repository": "alibaba-pai/MiniMax-H3-Acc-LoRAs",
+    "commit": "335001fb9e5455d68a0caa18ec2e319072150328",
+    "name": "MiniMax-H3-Ref2VA-Acc-8Step.safetensors",
+    "path": "models/pdd_acc/MiniMax-H3-Ref2VA-Acc-8Step.safetensors",
+    "sha256": "111c82e669f6e20e628228172edf39395f1a9fc3ad049793895e542c0f55b18c",
+    "bytes": 1372450680
+  },
+  {
+    "repository": "larryvrh/MiniMax-H3-Turbo-Lora",
+    "commit": "43a74557ac3f6539db8e0f2a959d03feb7a81480",
+    "name": "minimax_h3_turbo_v4_step600_ema.safetensors",
+    "path": "models/loras/minimax_h3_turbo_v4_step600_ema.safetensors",
+    "sha256": "5f3a626cd72c93a8b9318d6760c510bc5092d2ab13aaba1f932c5bab07a416d3",
+    "bytes": 779849816
+  }
+]

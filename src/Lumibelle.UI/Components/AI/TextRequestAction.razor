@@ -1,0 +1,75 @@
+@inject TimeProvider Clock
+@inject AiJobCoordinator Jobs
+@implements IAsyncDisposable
+
+<div class="text-request-action @(Primary ? "primary-request-action" : "")">
+    <button type="button" class="assist-trigger request-action-button" @ref="_button" disabled="@ButtonDisabled" @onclick="Activate" @onmousedown:preventDefault="true"
+            aria-label="@AccessibleLabel" aria-describedby="@(Notice is null ? null : _noticeId)" aria-haspopup="@(Primary && !Inspecting ? null : "dialog")">
+        @if (Spinning) { <span aria-hidden="true" class="request-spinner"></span> }
+        else if (StatusIcon is { } statusIcon) { <span aria-hidden="true" class="request-icon">@statusIcon</span> }
+        else { <AiAssistIcon /> }
+        <span class="request-action-copy"><span>@VisibleLabel</span>@if (Timing.Length > 0) { <small class="request-time" aria-hidden="true">@Timing</small> }</span>
+        @if (Notice is not null) { <span class="request-notice-badge" aria-hidden="true" title="@Notice">!</span> }
+    </button>
+    @if (Inspecting && !Preparing && (!Request!.Active || OnCancel.HasDelegate && !Request.Job.CancelRequested)) {
+        <details @onkeydown="MenuKey" @onkeydown:stopPropagation="_menuOpen" class="request-action-menu" open="@_menuOpen"><summary @onclick="() => _menuOpen = !_menuOpen" @onclick:preventDefault="true" aria-label="Request options">▾</summary><div>
+            @if (Request!.Active) { @if (OnCancel.HasDelegate && !Request.Job.CancelRequested) { <button type="button" @onclick="Cancel">Cancel request</button> } }
+            else { <button type="button" @onclick="NewRequest" disabled="@Disabled">New request</button> }
+        </div></details>
+    }
+    <span class="sr-only" role="status" aria-live="polite">@VisibleLabel</span>
+    @if (Notice is not null) { <span id="@_noticeId" class="sr-only">@Notice</span> }
+</div>
+@if (_cancelError is not null) { <p class="field-error" role="alert">@_cancelError</p> }
+@code {
+    [Parameter] public string Label { get; set; } = "Assist";
+    [Parameter] public string? Title { get; set; }
+    [Parameter] public string? Notice { get; set; }
+    [Parameter] public TextRequestPresentation? Request { get; set; }
+    [Parameter] public bool Preparing { get; set; }
+    [Parameter] public bool HasError { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public bool Primary { get; set; }
+    [Parameter] public EventCallback OnStart { get; set; }
+    [Parameter] public EventCallback OnReview { get; set; }
+    [Parameter] public EventCallback OnNew { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+    private Guid? _freshFor, _menuJob;
+    private readonly string _noticeId = $"request-notice-{Guid.NewGuid():N}";
+    private ElementReference _button;
+    private PeriodicTimer? _timer;
+    private Task? _ticks;
+    private bool _disposed, _menuOpen;
+    private string? _cancelError;
+    private bool Inspecting => !HasError && Request?.Inspectable == true && (!Primary || _freshFor != Request.Job.Id || Request.Active);
+    private bool Spinning => Preparing || Inspecting && Request!.Active && Request.Job.State != AiJobState.Waiting;
+    private bool ButtonDisabled => Preparing || !Inspecting && !HasError && Disabled;
+    private string VisibleLabel => Preparing ? "Preparing request…" : Inspecting ? Request!.Label : HasError ? "Needs attention" : Label;
+    private string AccessibleLabel => Inspecting ? VisibleLabel + (Request!.Active ? " · View request" : "") : HasError || Preparing ? VisibleLabel : Title ?? Label;
+    private string? StatusIcon => Inspecting && Request!.Job.State == AiJobState.Waiting ? "◷" : Inspecting && VisibleLabel == "Needs attention" || HasError ? "!" : null;
+    private string Timing => Inspecting && Request is { } request ? ProgressTiming.ForJob(request.Job, Jobs.Progress(request.Job.Id)?.Progress, Clock.GetUtcNow()) : "";
+    public ValueTask FocusAsync() => _button.FocusAsync();
+    private async Task Activate()
+    {
+        if (Preparing) return;
+        if (Inspecting) { await FocusAsync(); await OnReview.InvokeAsync(); }
+        else await OnStart.InvokeAsync();
+    }
+    private async Task NewRequest() { _menuOpen = false; if (Primary) _freshFor = Request?.Job.Id; await OnNew.InvokeAsync(); if (Primary) await FocusAsync(); }
+    private async Task MenuKey(KeyboardEventArgs e) { if (e.Key == "Escape" && _menuOpen) { _menuOpen = false; await FocusAsync(); } }
+    private async Task Cancel()
+    {
+        _menuOpen = false; _cancelError = null;
+        try { await OnCancel.InvokeAsync(); }
+        catch (WorkspaceStoreException e) { _cancelError = "Cancellation could not be saved. " + e.Message + " Open the request or try Cancel request again."; }
+    }
+    protected override void OnParametersSet()
+    {
+        if (_menuJob != Request?.Job.Id) { _menuJob = Request?.Job.Id; _menuOpen = false; _cancelError = null; }
+        if (_freshFor != Request?.Job.Id || Preparing) _freshFor = null;
+        if (Request?.Active == true && _timer is null) { _timer = new(TimeSpan.FromSeconds(1), Clock); _ticks = Tick(_timer); }
+        else if (Request?.Active != true) { _timer?.Dispose(); _timer = null; }
+    }
+    private async Task Tick(PeriodicTimer timer) { while (await timer.WaitForNextTickAsync()) await InvokeAsync(() => { if (!_disposed) StateHasChanged(); }); }
+    public async ValueTask DisposeAsync() { _disposed = true; _timer?.Dispose(); if (_ticks is not null) await _ticks; }
+}

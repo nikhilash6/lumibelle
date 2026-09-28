@@ -1,0 +1,79 @@
+@inject IAssetStore AssetStore
+@inject IVoiceStore Voices
+@inject IImageTrashStore ImageTrash
+@inject TimeProvider Clock
+<details class="shot-input-preview"><summary>Submitted references · @ResolvedReferences.For(Shot).Pictures.Count pictures · @ResolvedReferences.For(Shot).Videos.Count videos · @ResolvedReferences.For(Shot).Audio.Count audio inputs</summary>
+    <button @onclick="Refresh" disabled="@_busy">Refresh references</button>
+    @if (_error is not null) { <p role="alert">@_error</p> }
+    <div class="shots-actions">@foreach (var b in Shot.Images) { <button aria-pressed="@(_selected == b.Id ? "true" : "false")" @onclick="() => _selected = b.Id">Picture @(Shot.Images.IndexOf(b) + 1) · @b.Name</button> }</div>
+    @if (Shot.Images.FirstOrDefault(b => b.Id == _selected) is { } selected)
+    {
+        var resolved = Resolve(selected);
+        <ImageComparisonViewer Primary="@(new(new(selected.AssetId, selected.MediaId), selected.Name, SourceCrop: selected.Crop))" PrimaryImage="@(_missing.Contains(selected.Id) ? null : resolved.Image)" PrimaryUrl="@resolved.Url" UseCrop="_crop" Unavailable="_ => _missing.Add(selected.Id)" />
+        @if (selected.Crop is not null) { <button aria-pressed="@(_crop ? "true" : "false")" @onclick="() => _crop = !_crop">@(_crop ? "Show full image" : "Show submitted crop")</button> }
+        @if (resolved.Trash is { } trash) { <p>In Trash · @resolved.Remaining <button disabled="@_busy" @onclick="() => Restore(selected, trash)">Restore reference</button></p> }
+        <p><span class="@(ReferenceSetups.IsAnchor(selected) ? "frame-anchor-badge" : "")">@(selected.Purpose is { } purpose ? ShotLooks.Label(purpose) : selected.Use is { } use ? ReferenceSetups.UseLabel(use) : selected.Role)</span> @if (ShotReferences.Characters(Shot).FirstOrDefault(c => c.Id == selected.RepresentsId) is { } character) { <span>· Represents @character.Name</span> }</p>
+        <p class="preservation-text">@(Guidance.FirstOrDefault(g => g.BindingId == selected.Id)?.Effective ?? selected.PreservationOverride ?? selected.Notes)</p>
+    }
+    @foreach (var picture in ResolvedReferences.For(Shot).Pictures.Where(p => p.Keyframe is not null)) {
+        <p>Picture @picture.Number · @picture.Reel!.Name · @picture.Keyframe!.Frame.Seconds.ToString("0.###") s</p>
+        <CropThumbnail MeasureImage="true" Url="@ReferenceVideos.FrameUrl(ProjectId, picture.Keyframe.Frame)" Label="Submitted keyframe" Width="picture.Reel.Media.Width" Height="picture.Reel.Media.Height" Crop="picture.Keyframe.Crop" ThumbnailWidth="240" ThumbnailHeight="180" />
+        <p>@picture.Keyframe.Notes</p>
+    }
+    @foreach (var video in Shot.Videos)
+    {
+        <p>@ResolvedReferences.For(Shot).Label(video) · @video.Name</p>
+        @if (video.EffectiveVisuals == ReelVisuals.RefMod) { <p>Full visual RefMod · @ReelRefMods.Summary(video)</p><p class="field-hint">Selected still views, not the full source reel. Voice is separate.</p> }
+        @if (video.EffectiveVisuals == ReelVisuals.FullReel) {
+            <video controls preload="none" style="width:100%;max-height:260px" src="@ReferenceVideos.Url(ProjectId, video.Media.Id)"></video>
+            <small>Preview of original clip; generation uses its first @ReferenceVideos.EffectiveSeconds(video.Media, Shot).ToString("0.###") s.</small>
+        } else if (video.UseSoundtrack) {
+            var excerpt = ResolvedReferences.Excerpt(video);
+            <ReelAudioPreview ProjectId="ProjectId" Reel="video" />
+            <small>Audio excerpt @excerpt.Start.ToString("0.###")–@((excerpt.Start + excerpt.Duration).ToString("0.###")) s.</small>
+        }
+        <p>@video.Description</p>
+    }
+    @foreach (var b in Shot.Voices)
+    {
+        var active = _assets.Voices.FirstOrDefault(v => v.Matches(b));
+        var trash = _assets.VoiceTrash.FirstOrDefault(t => t.Voice.Matches(b) && !t.Purging && t.ExpiresUtc > Clock.GetUtcNow());
+        <p>Audio @lumibelle.Services.Production.ReferenceVideos.VoiceNumber(Shot, Shot.Voices.IndexOf(b)) · @b.Speaker · voice excerpt @b.Start.ToString("0.##")–@((b.Start + b.Duration).ToString("0.##")) s</p>
+        @if (active is not null || trash is not null)
+        {
+            <audio controls preload="none" data-excerpt-start="@N(b.Start)" data-excerpt-end="@N(b.Start + b.Duration)" src="@(active is not null ? $"/media/projects/{ProjectId}/voices/{b.VoiceId}" : $"/media/production-trash/{ProjectId}/Voice/{trash!.Id}")"></audio>
+            @if (trash is not null) { <p>In Trash <button disabled="@_busy" @onclick="() => RestoreVoice(trash.Id)">Restore voice</button></p> }
+        }
+        else { <p role="status">Voice unavailable.</p> }
+    }
+</details>
+@code {
+    [Parameter] public Guid ProjectId { get; set; }
+    [Parameter] public EventCallback Restored { get; set; }
+    [Parameter] public IReadOnlyList<ShotReferenceGuidance> Guidance { get; set; } = [];
+    [Parameter, EditorRequired] public Shot Shot { get; set; } = default!;
+    private AssetLibrary _assets = new() { ProjectId = Guid.Empty };
+    private string _key = ""; private Guid? _selected; private bool _crop, _busy; private string? _error;
+    private readonly HashSet<Guid> _missing = [];
+    private static string N(double v) => v.ToString(System.Globalization.CultureInfo.InvariantCulture);
+    protected override async Task OnParametersSetAsync() { var key = ProjectId + H3Policy.Fingerprint(Shot); if (_key != key) { _key = key; _selected = Shot.Images.FirstOrDefault()?.Id; await Refresh(); } }
+    private async Task Refresh() { try { _assets = await AssetStore.LoadAsync(ProjectId); _missing.Clear(); _error = null; } catch (Exception e) { _error = e.Message; } }
+    private (AssetImage? Image, string? Url, Guid? Trash, string Remaining) Resolve(ShotImageBinding b)
+    {
+        if (b.Kind == ShotImageKind.AssetImage)
+        {
+            var resolved = ReviewImageResolution.Resolve(_assets, new(new(b.AssetId, b.MediaId), b.Name));
+            return (resolved.Image, resolved.MediaUrl, resolved.Trash?.CanRestore(Clock.GetUtcNow()) == true ? resolved.Trash.Id : null,
+                resolved.Trash?.Remaining(Clock.GetUtcNow()) ?? "");
+        }
+        return (null, null, null, "Removed standalone frame. Replace it with an asset image.");
+    }
+    private async Task Restore(ShotImageBinding b, Guid id)
+    {
+        _busy = true; _error = null;
+        try { _assets = await ImageTrash.RestoreImagesAsync(ProjectId, [id], _assets.Revision); _missing.Remove(b.Id); await Restored.InvokeAsync(); }
+        catch (Exception e) { _error = e.Message + " Refresh references and retry."; }
+        finally { _busy = false; }
+    }
+    private async Task RestoreVoice(Guid id) { _busy = true; try { _assets = await Voices.RestoreVoicesAsync(ProjectId, [id], _assets.Revision); _error = null; await Restored.InvokeAsync(); } catch (Exception e) { _error = e.Message + " Refresh references and retry."; } finally { _busy = false; } }
+}

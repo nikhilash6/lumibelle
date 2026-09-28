@@ -1,0 +1,157 @@
+<div class="text-assistance @(Inline ? "inline-assistance" : "")" @ref="_origin">
+    @if (Inline) {
+        <section class="assist-panel" aria-label="@Title" tabindex="-1" @ref="_trigger">
+            <header class="assist-panel-heading"><strong><AiAssistIcon />Assistant</strong>@ExtraActions</header>
+            @if (Status is not null) { <div class="text-assist-status">@Status</div> }
+            <div class="assist-panel-body">
+                @ChildContent
+                <div class="assist-composer-model"><button type="button" class="model-chip" aria-label="Text model options" @onclick="OpenModel" disabled="@ModelLocked">@ModelLabel ▾</button></div>
+            </div>
+            <footer class="assist-panel-actions">@Actions</footer>
+        </section>
+    } else {
+        <div class="text-assist-controls">
+            <TextRequestAction @ref="_action" Label="@Label" Title="@Title" Notice="@Notice" Request="Request" Preparing="@(Preparing || _preparingSubmit)" HasError="HasError" Disabled="Disabled"
+                OnStart="StartOrResumeAsync" OnNew="OpenAsync" OnReview="ReviewAsync" OnCancel="CancelRequested" />
+            @ExtraActions
+        </div>
+        @if (Status is not null) { <div class="text-assist-status">@Status</div> }
+    }
+    <TextModelPicker @ref="_picker" ProjectId="ProjectId" Studio="Studio" HideTrigger="true" Disabled="ModelLocked" SelectionChanged="Changed" />
+</div>
+@if (!Inline) {
+<AiAssistDialog Visible="_open" VisibleChanged="VisibilityChanged" Title="@Title">
+    <ChildContent>
+        @ChildContent
+        <div class="assist-composer-model"><button type="button" class="model-chip" aria-label="Text model options" @onclick="OpenModel" disabled="@ModelLocked">@ModelLabel ▾</button></div>
+    </ChildContent>
+    <Actions>@Actions</Actions>
+</AiAssistDialog>
+}
+<AiAssistDialog Visible="_requestOpen" VisibleChanged="v => _requestOpen = v" Title="Text request">
+    <ChildContent>@if (InspectedJob is { } job) {
+        <AiResultAcknowledgement Observed="@(_inspectedResultJob is { } observed && observed.Id == job.Id ? new[] { observed } : [])" />
+        <AiJobProgressView Job="job" Queue="Jobs.View" Progress="Jobs.Progress(job.Id)" /><AiTextRequestDetails @key="job.Id" JobId="job.Id" RepairReviewRequested="ReviewRepair" />
+        @if (job.Error is { } error) { <p role="alert">@error</p> }
+        @if (_requestError is not null) { <p class="field-error" role="alert">@_requestError</p> }
+        <details><summary>Response details</summary><pre>@_inspectedRaw</pre></details>
+    }</ChildContent>
+    <Actions>@if (InspectedJob is { } job) {
+        @if (TextRequestPresentation.IsActive(job) && !job.CancelRequested) { <MudButton Disabled="_requestBusy" OnClick="() => RequestOperation(() => Jobs.CancelAsync(job.Id))">Cancel request</MudButton> }
+        else if (job.CanRetryCaptured) { <MudButton Disabled="_requestBusy" OnClick="() => RequestOperation(() => Jobs.ResumeAsync(job.Id))">Retry captured request</MudButton> }
+        else if (job is { State: AiJobState.NeedsAttention, Recovery: AiJobRecovery.GenerateAgain, RemoteUnconfirmed: false }) { <MudButton Disabled="@(_requestBusy || Disabled || ModelLocked)" OnClick="NewRequestAsync">New request</MudButton> }
+    }</Actions>
+</AiAssistDialog>
+@inject AiJobCoordinator Jobs
+@inject IAiJobStore JobStore
+@inject IJSRuntime JS
+@inject NavigationManager Navigation
+@implements IAsyncDisposable
+@code {
+    [Parameter] public Guid ProjectId { get; set; }
+    [Parameter] public TextAssistantStudio Studio { get; set; }
+    [Parameter] public string Label { get; set; } = "Assist";
+    [Parameter] public string Title { get; set; } = "Text assistance";
+    [Parameter] public string? Notice { get; set; }
+    [Parameter] public bool Inline { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public bool ModelLocked { get; set; }
+    [Parameter] public TextRequestPresentation? Request { get; set; }
+    [Parameter] public bool Preparing { get; set; }
+    [Parameter] public bool HasError { get; set; }
+    [Parameter] public EventCallback ReviewRequested { get; set; }
+    [Parameter] public EventCallback CancelRequested { get; set; }
+    [Parameter] public EventCallback Opened { get; set; }
+    [Parameter] public EventCallback<TextModelSelectionState> SelectionChanged { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+    [Parameter] public RenderFragment? Actions { get; set; }
+    [Parameter] public RenderFragment? ExtraActions { get; set; }
+    [Parameter] public RenderFragment? Status { get; set; }
+    private TextModelPicker? _picker;
+    private TextModelSelectionState? _state, _captured;
+    private bool _open, _requestOpen;
+    private bool _preparingSubmit, _restoreFocus;
+    private bool _requestBusy;
+    private string? _requestError;
+    private string? _repairNavigation;
+    private void ReviewRepair(AiJobHeader job) { _requestOpen = false; _open = false; _repairNavigation = job.ReviewUrl; }
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_repairNavigation is { } url && !_requestOpen) { _repairNavigation = null; Navigation.NavigateTo(url); }
+        if (_restoreFocus) { _restoreFocus = false; await RestoreFocusAsync(); }
+    }
+    private Guid? _inspectedId;
+    private AiJobHeader? _inspectedResultJob;
+    private string _inspectedRaw = "";
+    private (Guid, AiJobState, DateTimeOffset?)? _inspectedVersion;
+    private AiJobHeader? InspectedJob => Jobs.View.Jobs.FirstOrDefault(j => j.Id == _inspectedId);
+    private TextRequestAction? _action;
+    private ElementReference _origin, _trigger;
+    private IJSObjectReference? _focusModule;
+    public ValueTask FocusAsync() => Inline ? _trigger.FocusAsync() : _action?.FocusAsync() ?? ValueTask.CompletedTask;
+    public async Task RestoreFocusAsync()
+    {
+        _focusModule ??= await JS.InvokeAsync<IJSObjectReference>("import", lumibelle.UiAssets.Module("ai-jobs.js"));
+        if (_focusModule is not null) await _focusModule.InvokeVoidAsync("restoreRequestFocus", _origin);
+    }
+    public async ValueTask DisposeAsync()
+    {
+        if (_focusModule is not null) try { await _focusModule.DisposeAsync(); } catch (JSDisconnectedException) { }
+    }
+    private async Task ReviewAsync() { if (ReviewRequested.HasDelegate) await ReviewRequested.InvokeAsync(); else await OpenRequestAsync(); }
+    private string ModelLabel => _picker?.DisplayLabel ?? "Loading model…";
+    private async Task Changed(TextModelSelectionState value) { _state = value; await SelectionChanged.InvokeAsync(value); }
+    private async Task StartOrResumeAsync() { if (HasError) { _open = !Inline; await InvokeAsync(StateHasChanged); } else await OpenAsync(); }
+    public async Task OpenAsync()
+    {
+        await Opened.InvokeAsync();
+        if (_picker is not null) await _picker.RefreshModel();
+        // Capture the editor selection before focusing the trigger, then let the
+        // dialog restore focus here when it closes.
+        try { await FocusAsync(); }
+        catch (JSDisconnectedException) { return; }
+        _open = !Inline;
+        await InvokeAsync(StateHasChanged);
+    }
+    public Task CloseAsync() { _open = false; return InvokeAsync(StateHasChanged); }
+    public async Task OpenRequestAsync() {
+        if (Request is not { } request) return;
+        _inspectedId = request.Job.Id; _inspectedRaw = ""; _inspectedResultJob = null; _requestError = null; _requestOpen = true;
+        _inspectedVersion = null; await RefreshInspectedResult();
+        await InvokeAsync(StateHasChanged);
+    }
+    protected override Task OnParametersSetAsync() => RefreshInspectedResult();
+    private async Task NewRequestAsync() { _requestOpen = false; await OpenAsync(); }
+    private async Task RequestOperation(Func<Task> operation)
+    {
+        if (_requestBusy) return;
+        _requestBusy = true; _requestError = null;
+        try { await operation(); }
+        catch (WorkspaceStoreException e) { _requestError = e.Message; }
+        finally { _requestBusy = false; }
+    }
+    private async Task RefreshInspectedResult() {
+        if (!_requestOpen || InspectedJob is not { } job) return;
+        var version = (job.Id, job.State, job.FinishedUtc);
+        if (_inspectedVersion == version) return;
+        _inspectedVersion = version;
+        try {
+            var result = await JobStore.ReadArtifactAsync<AiTextJobResult>(job.Id, AiJobArtifact.Result);
+            if (_inspectedId == job.Id) { _inspectedRaw = result?.Raw ?? "No response yet."; _inspectedResultJob = job; }
+        } catch (WorkspaceStoreException e) { if (_inspectedId == job.Id) _inspectedRaw = e.Message; }
+    }
+    private Task VisibilityChanged(bool visible) { _open = visible; _restoreFocus = !visible; return Task.CompletedTask; }
+    private Task OpenModel() => _picker?.OpenAsync() ?? Task.CompletedTask;
+    public async Task<bool> PrepareSubmitAsync()
+    {
+        if (_preparingSubmit || _picker is null) return false;
+        _preparingSubmit = true;
+        try {
+            await InvokeAsync(StateHasChanged);
+            if (!await _picker.PrepareSubmitAsync()) return false;
+            _captured = _state; return true;
+        } finally { _preparingSubmit = false; await InvokeAsync(StateHasChanged); }
+    }
+    public AiJobSubmission Attribute(AiJobSubmission submission) => TextModelSession.Attribute(submission, _captured);
+    public async Task QueuedAsync() { _open = false; if (_picker is not null) await _picker.SubmittedAsync(); await InvokeAsync(StateHasChanged); }
+}

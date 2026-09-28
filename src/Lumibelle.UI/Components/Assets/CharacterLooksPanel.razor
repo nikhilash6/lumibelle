@@ -1,0 +1,129 @@
+@inject IJSRuntime JS
+@inject AiJobCoordinator Jobs
+@implements IAsyncDisposable
+
+<section class="character-looks" aria-label="Character looks" @ref="_section" @onkeydown="MenuKeyDown">
+    <label class="look-label" for="character-look-filter">Look</label>
+    <div class="look-toolbar">
+        <select aria-label="Look" id="character-look-filter" value="@Filter" @onchange="FilterInput" disabled="@Disabled">
+            <option value="all">All images · @Asset.Images.Count</option><option value="general">General / unassigned · @Asset.Images.Count(i => i.LookId is null)</option>
+            @foreach (var look in Asset.Looks.Where(l => !l.Archived || _showArchived || Filter == l.Id.ToString())) { <option value="@look.Id">@look.Name @(look.Archived ? "· Archived" : "") · @Asset.Images.Count(i => i.LookId == look.Id)</option> }
+        </select>
+        <button class="look-add" type="button" disabled="@Disabled" @onclick="Add" aria-label="Add look" title="Add look"><MudIcon Icon="@Icons.Material.Outlined.Add" />Add</button>
+        @if (Selected is not null || Asset.Looks.Any(l => l.Archived))
+        {
+            <MudMenu @ref="_actionsMenu" @bind-Open="_menuOpen" Class="look-actions-menu" PopoverClass="look-actions-popover" Icon="@Icons.Material.Outlined.MoreHoriz" AriaLabel="Look actions" Size="Size.Small" Dense="true" Disabled="Disabled" AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight">
+                <div role="menu" aria-label="Look actions" @onkeydown="MenuKeyDown">
+                @if (Selected is { } current)
+                {
+                    <MudMenuItem role="menuitem" Icon="@Icons.Material.Outlined.Edit" AutoClose="false" OnClick="() => OpenFromMenuAsync(current)">Edit look</MudMenuItem>
+                    <MudMenuItem role="menuitem" Icon="@Icons.Material.Outlined.ContentCopy" OnClick="() => Duplicate(current)">Duplicate look</MudMenuItem>
+                    <MudMenuItem role="menuitem" Icon="@(current.Archived ? Icons.Material.Outlined.Unarchive : Icons.Material.Outlined.Archive)" OnClick="() => Archive(current)">@(current.Archived ? "Unarchive look" : "Archive look")</MudMenuItem>
+                }
+                @if (Asset.Looks.Any(l => l.Archived))
+                {
+                    @if (Selected is not null) { <MudDivider /> }
+                    <MudMenuItem role="menuitem" Icon="@(_showArchived ? Icons.Material.Outlined.VisibilityOff : Icons.Material.Outlined.Visibility)" OnClick="() => _showArchived = !_showArchived">@(_showArchived ? "Hide archived looks" : "Show archived looks")</MudMenuItem>
+                }
+                </div>
+            </MudMenu>
+        }
+    </div>
+    @if (Selected is { } selected)
+    {
+        @if (selected.Archived) { <p class="look-archive-notice" role="status">Archived · unarchive from the menu to use this look again.</p> }
+        <details class="look-details" @key="selected.Id">
+            <summary>Look details</summary>
+            <div class="look-details-body">
+                @if (!string.IsNullOrWhiteSpace(selected.Description)) { <p>@selected.Description</p> }
+                @if (!string.IsNullOrWhiteSpace(selected.PreservationGuidance)) { <h3>Keep consistent in shots</h3><p>@selected.PreservationGuidance</p> }
+                @if (selected.Evidence.Count > 0)
+                {
+                    <div class="asset-evidence"><h3>Script evidence · @selected.Evidence.Count</h3>@foreach (var evidence in selected.Evidence) { <blockquote><strong>@evidence.Label</strong><span>@evidence.Excerpt</span></blockquote> }</div>
+                }
+                @if (string.IsNullOrWhiteSpace(selected.Description) && string.IsNullOrWhiteSpace(selected.PreservationGuidance) && selected.Evidence.Count == 0) { <p>No notes yet. Choose Edit look from the menu to add them.</p> }
+            </div>
+        </details>
+    }
+    @if (_error is not null) { <p role="alert">@_error</p> }
+</section>
+<InlineDialog Class="look-editor-dialog" Visible="_open" VisibleChanged="v => _open = v" Options="@(new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseOnEscapeKey = true, BackdropClick = false })"
+              Title="@(_new ? "Add look" : "Edit look")" CloseLabel="Close look editor">
+    <DialogContent>
+        <label>Look name<input maxlength="200" @bind="_name" @bind:event="oninput" /></label>
+        <label>Look description<textarea rows="5" maxlength="12000" @bind="_description" @bind:event="oninput"></textarea></label>
+        <details class="look-preservation" open="@(_guidanceJob is not null)"><summary>Keep consistent in shots</summary><div class="field-label-help"><label for="look-preservation-@_id">This look</label><HelpHint Label="Look preservation" Text="Clothing and styling for this look. Shared face and proportions belong to character identity. These prompt instructions guide Shots; they are not guaranteed constraints." /></div><textarea id="look-preservation-@_id" rows="3" maxlength="12000" @bind="_preserve" @bind:event="oninput"></textarea>
+        @if (_open && !_new && Library is not null)
+        { <GuidanceSuggestion @key="_id" Context="LookGuidance" Library="Library" Disabled="Disabled" Embedded="true" RequestedJobId="_guidanceJob" Apply="value => _preserve = value" /> }
+        else { <p class="field-hint">Save the look to request a guidance suggestion.</p> }
+        </details>
+        @if (_error is not null) { <p role="alert">@_error</p> }
+    </DialogContent>
+    <DialogActions><MudButton OnClick="() => _open = false">Cancel</MudButton><MudButton OnClick="Save" Disabled="Disabled" Color="Color.Primary">Save look</MudButton></DialogActions>
+</InlineDialog>
+@code {
+    [Parameter, EditorRequired] public ReferenceAsset Asset { get; set; } = default!;
+    [Parameter] public AssetLibrary? Library { get; set; }
+    [Parameter] public Guid? RequestedJobId { get; set; }
+    [Parameter] public string Filter { get; set; } = "all";
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public EventCallback<string> FilterChanged { get; set; }
+    [Parameter] public EventCallback<ReferenceAsset> Changed { get; set; }
+    private MudMenu? _actionsMenu;
+    private Guid? _guidanceJob, _handledGuidance;
+    protected override Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (RequestedJobId is { } id && _handledGuidance != id && Jobs.View.Jobs.FirstOrDefault(j => j.Id == id && j.Kind == AiJobKind.Guidance &&
+            j.Target.ProjectId == Library?.ProjectId && j.Target.AssetId == Asset.Id && j.Target.GuidanceScope == GuidanceScope.Look) is { } job &&
+            Asset.Looks.FirstOrDefault(l => l.Id == job.Target.LookId && !l.Archived) is { } look)
+        {
+            if (_open && _id != look.Id) { _error = "Close or save this look before reviewing guidance for another look."; }
+            else { if (!_open) Open(look); _guidanceJob = id; _handledGuidance = id; StateHasChanged(); }
+        }
+        return Task.CompletedTask;
+    }
+    private GuidanceContext? LookGuidance => Library is null ? null : GuidanceContext.From(new(Library.ProjectId, Asset.Id, GuidanceScope.Look, _id), Asset with { Looks = Asset.Looks.Select(l => l.Id == _id ? l with { Name = _name, Description = _description, PreservationGuidance = _preserve } : l).ToArray() });
+    private ElementReference _section;
+    private IJSObjectReference? _module;
+    private bool _open, _new, _showArchived, _menuOpen; private Guid _id; private string _name = "", _description = "", _preserve = ""; private string? _error;
+    private CharacterLook? Selected => Asset.Looks.FirstOrDefault(l => l.Id.ToString() == Filter);
+    private Task FilterInput(ChangeEventArgs e) => FilterChanged.InvokeAsync(e.Value?.ToString() ?? "all");
+    private void Add() { _guidanceJob = null; _id = Guid.NewGuid(); _name = _description = _preserve = ""; _new = true; _error = null; _open = true; }
+    private void Open(CharacterLook look) { _guidanceJob = null; _id = look.Id; _name = look.Name; _description = look.Description; _preserve = look.PreservationGuidance; _new = false; _error = null; _open = true; }
+    private async Task OpenFromMenuAsync(CharacterLook look)
+    {
+        if (_actionsMenu is not null) await _actionsMenu.CloseMenuAsync();
+        await FocusActionsAsync();
+        Open(look);
+    }
+    private async Task MenuKeyDown(KeyboardEventArgs args)
+    {
+        if (args.Key != "Escape" || !_menuOpen || _actionsMenu is null) return;
+        await _actionsMenu.CloseMenuAsync();
+        await FocusActionsAsync();
+    }
+    private async Task FocusActionsAsync()
+    {
+        _module ??= await JS.InvokeAsync<IJSObjectReference>("import", lumibelle.UiAssets.Module("assets-studio.js"));
+        await _module.InvokeVoidAsync("focusLookActions", _section);
+    }
+    public async ValueTask DisposeAsync()
+    {
+        if (_module is not null) { try { await _module.DisposeAsync(); } catch (JSDisconnectedException) { } }
+    }
+    private async Task Save()
+    {
+        var old = Asset.Looks.FirstOrDefault(l => l.Id == _id) ?? new CharacterLook { Id = _id };
+        var edited = old with { Name = _name.Trim(), Description = _description, PreservationGuidance = _preserve };
+        var next = Asset with { Looks = _new ? [.. Asset.Looks, edited] : Asset.Looks.Select(l => l.Id == _id ? edited : l).ToArray() };
+        if (LookPolicy.Invalid(next)) { _error = "Give the look a unique name and keep notes within their limits."; return; }
+        await Changed.InvokeAsync(next); await FilterChanged.InvokeAsync(_id.ToString()); _open = false; _error = null;
+    }
+    private async Task Duplicate(CharacterLook look)
+    {
+        var name = LookPolicy.UniqueName(look.Name, Asset.Looks, "copy");
+        var copy = look.Copy() with { Id = Guid.NewGuid(), Name = name, Archived = false, PreferredAppearanceReferences = [] };
+        await Changed.InvokeAsync(Asset with { Looks = [.. Asset.Looks, copy] }); await FilterChanged.InvokeAsync(copy.Id.ToString());
+    }
+    private Task Archive(CharacterLook look) => Changed.InvokeAsync(Asset with { Looks = Asset.Looks.Select(l => l.Id == look.Id ? l with { Archived = !l.Archived } : l).ToArray() });
+}

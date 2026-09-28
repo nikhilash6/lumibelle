@@ -1,0 +1,6 @@
+.take-summary { font-size:var(--lumi-font-size-meta); color: var(--muted); margin:8px 0; overflow-wrap:anywhere; }
+.take-summary p { margin:4px 0; }
+.take-seed { font-variant-numeric:tabular-nums; }
+.take-input-changes { display:flex; flex-wrap:wrap; gap:4px; margin:6px 0 8px; }
+.take-input-change { border:1px solid var(--lumi-warning-border); border-radius:var(--lumi-radius-small); padding:2px 6px; background:var(--lumi-warning-surface); color:var(--lumi-warning); font-weight:600; }
+.take-input-unavailable { color:var(--lumi-text-muted); }

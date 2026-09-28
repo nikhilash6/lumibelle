@@ -1,0 +1,36 @@
+@inject TimeProvider Clock
+
+<details class="codex-image-timing" aria-label="Codex image timing" open="@_expanded">
+    <summary aria-label="@($"Timing details · {Activity}")" @onclick="() => _expanded = !_expanded" @onclick:preventDefault="true">@Activity</summary>
+    <div class="codex-timing-breakdown">
+    @if (Timing.DurationsAt(Clock.GetUtcNow()) is { } duration)
+    {
+        <dl class="codex-timing-values">
+            <div><dt>Agent preparation</dt><dd>@Format(duration.Preparation)</dd></div>
+            <div><dt>Image tool</dt><dd>@(Timing.ImageCalls.Count == 0 ? "Waiting" : Format(duration.ImageTool))</dd></div>
+            <div><dt>Agent follow-up</dt><dd>@(Timing.ImageCalls.Count == 0 ? "Waiting" : Format(duration.FollowUp))</dd></div>
+        </dl>
+        @if (Timing.ImageCalls.Count > 1) { <p class="codex-timing-note">Across @Timing.ImageCalls.Count image calls.</p> }
+    }
+    else
+    {
+        <p class="codex-timing-note">Timing breakdown unavailable: Codex did not report every image activity boundary.</p>
+    }
+    </div>
+    <HelpHint Label="Codex image timing" Text="Elapsed time within Codex, including waiting. Agent time includes prompt work and coordination." />
+</details>
+
+@code {
+    [Parameter, EditorRequired] public CodexImageTiming Timing { get; set; } = null!;
+    private bool _expanded;
+    private string Activity => Timing.CompletedUtc is not null ? "Timing details" :
+        Timing.ImageCalls.Any(c => c.CompletedUtc is null) ? "Image tool running…" :
+        Timing.ImageCalls.Count > 0 ? "Agent follow-up…" : "Preparing request…";
+
+    private static string Format(TimeSpan duration)
+    {
+        var seconds = Math.Max(0, (long)Math.Round(duration.TotalSeconds));
+        if (seconds == 0) return "<1s";
+        return seconds < 60 ? $"≈{seconds}s" : $"≈{seconds / 60}m {seconds % 60:00}s";
+    }
+}

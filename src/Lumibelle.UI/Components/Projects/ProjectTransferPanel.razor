@@ -1,0 +1,114 @@
+@using lumibelle.Services.Projects
+@using Microsoft.AspNetCore.Components.Forms
+@implements IAsyncDisposable
+@inject IProjectPackageService Packages
+@inject IHostActions HostActions
+
+<section class="project-transfer" aria-label="Project export and import" aria-busy="@_busy">
+    <section class="project-transfer-section">
+        <h3>Export project</h3>
+        <p class="field-hint">Package the saved project, media, prompts and cut. Unsaved edits and live AI requests are not included.</p>
+        <label for="package-project">Project</label>
+        <select id="package-project" @bind="_project" disabled="@_busy">
+            <option value="@Guid.Empty">Choose a project…</option>
+            @foreach (var project in Projects) { <option value="@project.Id">@project.Name</option> }
+        </select>
+        <label class="check-row"><input type="checkbox" @bind="_trash" disabled="@_busy" />Include referenced images from Trash</label>
+        <p class="field-hint">Only deleted images still used by saved references or retained provenance are included. Unreferenced trash is excluded.</p>
+        <p class="field-hint">Unused LoRA selections and inactive accelerator paths are removed from project metadata, including refinement packages. Used LoRA names remain. Media and authored text are not anonymized.</p>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@(_busy || _project == Guid.Empty)" OnClick="Export">Prepare export</MudButton>
+        @if (_export is { } package) {
+            <div role="status"><strong>Package ready · @Size(package.Bytes)</strong>
+                <p>@package.Manifest.Files.Count files · @package.Manifest.IncludedTrashImages referenced trash images · @package.Manifest.RemovedLoraSelections unused LoRA metadata entries removed</p>
+            </div>
+            <MudButton Disabled="_busy" OnClick="Download">Download project package</MudButton>
+            <MudButton Disabled="_busy" OnClick="DiscardExport">Remove temporary package</MudButton>
+            <details><summary>Package contents and portability</summary>@foreach (var note in package.Manifest.Notices) { <p>@note</p> }</details>
+        }
+    </section>
+    <section class="project-transfer-section">
+        <h3>Import project</h3>
+        <p class="field-hint">Import a Lumibelle ZIP as a new library entry. Project identity is preserved; existing projects are never overwritten or merged.</p>
+        <label for="package-file">Project package (ZIP)</label>
+        <InputFile id="package-file" OnChange="ChooseFile" accept=".zip" disabled="@_busy" />
+        <p class="field-hint">Files stream to disk. Limits: 64 GiB ZIP, 256 GiB expanded, 100,000 files. Temporary transfer files expire after 24 hours and are cleaned at the next transfer.</p>
+        <MudButton Disabled="@(_busy || _file is null)" OnClick="Inspect">Inspect package</MudButton>
+        @if (_import is { } incoming) {
+            <div role="status"><strong>@incoming.Project.Name</strong><p>@incoming.FileCount files · @Size(incoming.Bytes) expanded</p></div>
+            @if (incoming.AlreadyExists) { <p role="alert">This project ID already exists in this library. Nothing will be overwritten. Use another library for this package.</p> }
+            <details><summary>Review import details</summary>@foreach (var note in incoming.Notices) { <p>@note</p> }</details>
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@(_busy || incoming.AlreadyExists)" OnClick="Import">Import project</MudButton>
+            <MudButton Disabled="_busy" OnClick="DiscardImport">Discard staged import</MudButton>
+        }
+    </section>
+    @if (_progress is { } progress) { <p role="status">@progress.Message @(progress.Bytes > 0 ? " · " + Size(progress.Bytes) : "")</p> }
+    @if (_error is not null) { <p role="alert">@_error</p> }
+    @if (ActionsSection is { } section) { <SectionContent SectionId="section">@Actions</SectionContent> } else { @Actions }
+</section>
+
+@code {
+    [Parameter] public IReadOnlyList<ProjectInfo> Projects { get; set; } = [];
+    [Parameter] public EventCallback<ProjectInfo> Imported { get; set; }
+    [Parameter] public EventCallback Closed { get; set; }
+    // A containing dialog shows Cancel transfer and Close in its footer.
+    [Parameter] public object? ActionsSection { get; set; }
+    [Parameter] public EventCallback<bool> BusyChanged { get; set; }
+    private RenderFragment Actions => @<text>@if (_busy) { <MudButton OnClick="Cancel">Cancel transfer</MudButton> }<MudButton Disabled="_busy" OnClick="Close">Close</MudButton></text>;
+    private Guid _project;
+    private bool _trash = true, _busy, _disposed;
+    private IBrowserFile? _file;
+    private ProjectPackageExport? _export;
+    private ProjectPackageImport? _import;
+    private ProjectPackageProgress? _progress;
+    private string? _error;
+    private readonly CancellationTokenSource _lifetime = new();
+    private CancellationTokenSource? _operation;
+    private Guid? _stagedToken;
+    private static string Size(long bytes) => bytes >= 1024L * 1024 * 1024 ? $"{bytes / (1024d * 1024 * 1024):0.00} GiB" : $"{bytes / (1024d * 1024):0.0} MiB";
+    private IProgress<ProjectPackageProgress> Progress() => new Progress<ProjectPackageProgress>(p => {
+        if (!_disposed) _ = InvokeAsync(() => { if (!_disposed) { _progress = p; StateHasChanged(); } });
+    });
+    private async Task Run(Func<CancellationToken, Task> action)
+    {
+        if (_busy) return;
+        _busy = true; _error = null; _progress = null; await BusyChanged.InvokeAsync(true);
+        using var operation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token); _operation = operation;
+        try { await action(operation.Token); }
+        catch (OperationCanceledException) when (operation.IsCancellationRequested) { if (!_disposed) _progress = new("Transfer cancelled. Existing projects are unchanged."); }
+        catch (Exception e) { if (!_disposed) _error = e.Message; }
+        finally { _operation = null; _busy = false; if (!_disposed) await BusyChanged.InvokeAsync(false); }
+    }
+    private Task Export() => Run(async ct => { var result = await Packages.ExportAsync(_project, new(_trash), Progress(), ct); if (!_disposed) _export = result; });
+    private Task Download() => Run(async ct => { if (_export is { } package) { ct.ThrowIfCancellationRequested(); await HostActions.SaveResourceAsync(package.Name, package.Url); } });
+    private Task DiscardExport() => Run(async ct => { if (_export is { } package) { await Packages.DiscardExportAsync(package.ProjectId, package.Id, ct); _export = null; } });
+    private async Task ChooseFile(InputFileChangeEventArgs e)
+    {
+        if (_busy) return;
+        await DiscardImport(); _file = e.File; _error = null;
+        if (_file.Size > ProjectPackageService.MaximumArchiveBytes) { _file = null; _error = "Choose a project package no larger than 64 GiB."; }
+    }
+    private Task Inspect() => Run(async ct => {
+        if (_file is null) return;
+        if (_stagedToken is { } previous) { await Packages.DiscardImportAsync(previous, ct); _stagedToken = null; _import = null; }
+        await using var stream = _file.OpenReadStream(ProjectPackageService.MaximumArchiveBytes, ct);
+        var result = await Packages.StageImportAsync(stream, Progress(), ct); _stagedToken = result.Token;
+        if (!_disposed) _import = result;
+    });
+    private Task Import() => Run(async ct => {
+        if (_import is null) return;
+        var result = await Packages.CommitImportAsync(_import.Token, ct);
+        _progress = new("Project imported. No generation was started."); _import = null;
+        if (!_disposed) await Imported.InvokeAsync(result);
+    });
+    private Task DiscardImport() => Run(async ct => {
+        if (_stagedToken is { } token) { await Packages.DiscardImportAsync(token, ct); _stagedToken = null; _import = null; }
+    });
+    private void Cancel() => _operation?.Cancel();
+    private Task Close() => Closed.InvokeAsync();
+    public async ValueTask DisposeAsync()
+    {
+        _disposed = true; _lifetime.Cancel();
+        if (_stagedToken is { } token) { try { await Packages.DiscardImportAsync(token); } catch { /* Opportunistic cleanup also expires abandoned stages. */ } }
+        _lifetime.Dispose();
+    }
+}

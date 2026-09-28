@@ -1,0 +1,55 @@
+<div class="review-viewer @((Secondary is not null && SideBySide) ? "side-by-side" : "")">
+    @if (PrimaryImage is null || Secondary is not null && SecondaryImage is null)
+    {
+        <div class="review-unavailable" role="status">An image in this selection is unavailable. Choose another image to view.</div>
+    }
+    else if (Secondary is not null && SideBySide)
+    {
+        <figure><figcaption>@Label(Primary)</figcaption><div class="review-canvas" style="@CanvasStyle(Primary, PrimaryImage)">
+            <ReviewImageFrame MediaUrl="@PrimaryUrl" Entry="Primary" Image="PrimaryImage" StageRatio="@Ratio(Primary, PrimaryImage)" UseCrop="UseCrop" Unavailable="Unavailable" />
+        </div></figure>
+        <figure><figcaption>@Label(Secondary)</figcaption><div class="review-canvas" style="@CanvasStyle(Secondary, SecondaryImage!)">
+            <ReviewImageFrame MediaUrl="@SecondaryUrl" Entry="Secondary" Image="SecondaryImage!" StageRatio="@Ratio(Secondary, SecondaryImage!)" UseCrop="UseCrop" Unavailable="Unavailable" />
+        </div></figure>
+    }
+    else
+    {
+        <figure><figcaption>@Label(Primary)@if (Secondary is not null) { <span> · compared with @Label(Secondary)</span> }</figcaption>
+            <div class="review-canvas @(Secondary is not null ? "review-wipe" : "")" style="@CanvasStyle(Primary, PrimaryImage)">
+                <ReviewImageFrame MediaUrl="@PrimaryUrl" Entry="Primary" Image="PrimaryImage" StageRatio="@Ratio(Primary, PrimaryImage)" UseCrop="UseCrop" Unavailable="Unavailable" />
+                @if (Secondary is not null)
+                {
+                    <div class="review-wipe-overlay" style="clip-path:inset(0 calc(100% - @(_position)%) 0 0)">
+                        <ReviewImageFrame MediaUrl="@SecondaryUrl" Entry="Secondary" Image="SecondaryImage!" StageRatio="@Ratio(Primary, PrimaryImage)" UseCrop="UseCrop" Unavailable="Unavailable" />
+                    </div>
+                    <span class="compare-divider" style="left:@(_position)%" aria-hidden="true"></span>
+                    <span class="compare-label source">@Label(Secondary)</span><span class="compare-label result">@Label(Primary)</span>
+                    <input class="compare-drag-range" type="range" min="0" max="100" step="1" @bind="_position" @bind:event="oninput"
+                           aria-label="Comparison slider" aria-valuetext="@($"{_position}% of {Label(Secondary)} revealed")" />
+                }
+            </div>
+        </figure>
+    }
+</div>
+
+@code {
+    [Parameter] public string? PrimaryUrl { get; set; }
+    [Parameter] public string? SecondaryUrl { get; set; }
+    [Parameter, EditorRequired] public ImageReviewEntry Primary { get; set; } = null!;
+    [Parameter] public AssetImage? PrimaryImage { get; set; }
+    [Parameter] public ImageReviewEntry? Secondary { get; set; }
+    [Parameter] public AssetImage? SecondaryImage { get; set; }
+    [Parameter] public bool SideBySide { get; set; }
+    [Parameter] public bool UseCrop { get; set; }
+    [Parameter] public EventCallback<AssetImageReference> Unavailable { get; set; }
+    private int _position = 50;
+    private (AssetImageReference?, AssetImageReference?) _pair;
+    protected override void OnParametersSet()
+    {
+        var pair = (Primary.Reference, Secondary?.Reference);
+        if (pair != _pair) { _pair = pair; _position = 50; }
+    }
+    private string Label(ImageReviewEntry entry) => entry.Label + (UseCrop && entry.SourceCrop is not null ? " · submitted crop" : "");
+    private double Ratio(ImageReviewEntry entry, AssetImage image) => image.Width * (UseCrop ? entry.SourceCrop?.Width ?? 1 : 1) / (image.Height * (UseCrop ? entry.SourceCrop?.Height ?? 1 : 1));
+    private string CanvasStyle(ImageReviewEntry entry, AssetImage image) => FormattableString.Invariant($"--stage-ratio:{Ratio(entry, image):0.######};aspect-ratio:{Ratio(entry, image):0.######}");
+}

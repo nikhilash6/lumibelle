@@ -1,0 +1,25 @@
+@using lumibelle.Models
+@using lumibelle.Services.Production
+
+<div class="asset-reel-usage-default">
+    <label for="@ControlId">Default reel usage</label>
+    <select id="@ControlId" value="@ReelUsageDefaults.Initial(Asset)" @onchange="Select" disabled="@Disabled">
+        <option value="Keyframes">Keyframes</option>
+        <option value="RefMod">Selected-keyframe RefMod · Experimental</option>
+        <option value="FullReel">Full reel</option>
+    </select>
+    <p class="field-hint">Used when adding this asset's reels to a shot or reel recipe. Override Visuals in Manage references. Existing references keep their saved mode; voice is chosen separately. RefMods are built automatically when generating.</p>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public ReferenceAsset Asset { get; set; } = null!;
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public EventCallback<ReelVisuals?> Changed { get; set; }
+    private string ControlId => "default-reel-usage-" + Asset.Id.ToString("N");
+    private Task Select(ChangeEventArgs e)
+    {
+        if (Disabled || !Enum.TryParse<ReelVisuals>(e.Value?.ToString(), out var mode) || !ReelUsageDefaults.Valid(mode))
+            return Task.CompletedTask;
+        return Changed.InvokeAsync(mode == ReelVisuals.Keyframes ? (ReelVisuals?)null : mode);
+    }
+}

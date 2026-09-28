@@ -1,0 +1,5 @@
+.video-regeneration-field { display:grid; gap:.4rem; margin:1rem 0; }
+.video-regeneration-field :is(select,input) { width:100%; min-width:0; padding:8px; border: 1px solid var(--lumi-control-border); border-radius: var(--lumi-radius-control); background: var(--lumi-surface); color: var(--ink); font:inherit; }
+.video-regeneration-check { display:flex; align-items:center; gap:8px; margin:1rem 0 .25rem; }
+.video-regeneration-check + .field-hint { margin-top:0; }
+.video-seed { overflow-wrap:anywhere; font-variant-numeric:tabular-nums; }

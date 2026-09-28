@@ -1,0 +1,2 @@
+.model-benchmark { overflow-wrap: anywhere; }
+.benchmark-no-answer { padding: 10px 12px; background: var(--lumi-warning-surface); border-left: 3px solid var(--lumi-warning-border); }

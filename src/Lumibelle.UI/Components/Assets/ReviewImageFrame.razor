@@ -1,0 +1,28 @@
+@if (Image is not null)
+{
+    <div class="review-image-frame" style="@FrameStyle">
+        <img data-ai-candidate="@(Entry.IsTake ? Entry.Reference.ImageId : (Guid?)null)" src="@MediaUrl"
+             alt="@Entry.Label" style="@ImageStyle" @onerror="() => Unavailable.InvokeAsync(Entry.Reference)" />
+    </div>
+}
+
+@code {
+    [Parameter] public string? MediaUrl { get; set; }
+    [Parameter, EditorRequired] public ImageReviewEntry Entry { get; set; } = null!;
+    [Parameter, EditorRequired] public AssetImage Image { get; set; } = null!;
+    [Parameter] public double StageRatio { get; set; }
+    [Parameter] public bool UseCrop { get; set; }
+    [Parameter] public EventCallback<AssetImageReference> Unavailable { get; set; }
+    private ImageCropRegion Crop => UseCrop ? Entry.SourceCrop ?? new() : new();
+    private string FrameStyle
+    {
+        get
+        {
+            var ratio = Image.Width * Crop.Width / (Image.Height * Crop.Height);
+            var width = ratio >= StageRatio ? 100 : ratio / StageRatio * 100;
+            var height = ratio >= StageRatio ? StageRatio / ratio * 100 : 100;
+            return FormattableString.Invariant($"left:{(100-width)/2:0.######}%;top:{(100-height)/2:0.######}%;width:{width:0.######}%;height:{height:0.######}%");
+        }
+    }
+    private string ImageStyle => FormattableString.Invariant($"left:{-Crop.X/Crop.Width*100:0.######}%;top:{-Crop.Y/Crop.Height*100:0.######}%;width:{100/Crop.Width:0.######}%;height:{100/Crop.Height:0.######}%");
+}

@@ -1,0 +1,392 @@
+@page "/settings/ai"
+@inherits ProjectAwareComponent
+@inject IAiSettingsStore Settings
+@inject IAiProviderRegistry Providers
+@inject IReferenceImageGenerator ImageGenerator
+@inject IReferenceImageEditor ImageEditor
+@inject IDialogService Dialogs
+@implements IDisposable
+
+<PageTitle>AI settings · Lumibelle</PageTitle>
+<div class="settings-heading ai-settings-heading"><a class="writing-back" href="@ProjectLink(ReturnUrl)">← @ReturnLabel</a><h1>AI settings</h1></div>
+@if (_loading) { <p role="status">Loading AI settings…</p> }
+else if (_settings is null)
+{
+    <MudAlert Severity="Severity.Error">@_error</MudAlert><MudButton OnClick="LoadAsync">Try again</MudButton>
+}
+else
+{
+    <div class="ai-settings-workspace ai-settings-form">
+        <div class="ai-settings-tabs" role="tablist" aria-label="AI settings sections">
+            @for (var i = 0; i < Tabs.Length; i++)
+            {
+                var index = i; var item = Tabs[index];
+                <button type="button" role="tab" id="ai-tab-@item.Key" aria-controls="ai-panel-@item.Key" aria-selected="@(_tab == item.Key ? "true" : "false")" tabindex="@(_tab == item.Key ? 0 : -1)" @ref="_tabElements[index]" @onclick="() => SelectTab(item.Key)" @onkeydown="args => TabKeyAsync(args, index)">@item.Label</button>
+            }
+        </div>
+        @if (_error is not null)
+        {
+            <div class="settings-error" role="alert">@_error @if (_conflict) { <MudButton OnClick="ReloadSnapshotAsync" Disabled="Busy">Reload saved settings</MudButton> }</div>
+        }
+        <div class="settings-feedback" role="status">@(_saving ? "Saving…" : _saveMessage)</div>
+        @if (_visitedProviders.Count > 0)
+        {
+            <section id="ai-panel-connections" role="tabpanel" aria-labelledby="ai-tab-connections" hidden='@(_tab != "connections")'>
+                <div class="ai-connections-layout">
+                    <AiProviderSidebar Label="Connection providers" TabPrefix="ai-provider-" PanelPrefix="ai-connection-" Selection="@ConnectionProvider" SelectionChanged="SelectProvider" />
+                    <div class="ai-connection-content">
+                        @if (_visitedProviders.Contains("comfyui"))
+                        {
+                            <section id="ai-connection-comfyui" role="tabpanel" aria-labelledby="ai-provider-comfyui" hidden='@(ConnectionProvider != "comfyui")'>
+                                <form id="connection-comfyui-form" class="settings-card" @onsubmit="SaveComfyAsync" @onsubmit:preventDefault>
+                                    <div class="settings-card-title"><span class="provider-badge">SERVER</span><h2>ComfyUI</h2></div><p>Connect the ComfyUI server that runs your text, image, and video models, on this computer or elsewhere.</p>
+                                    <label for="comfy-url">Server URL</label><input id="comfy-url" type="url" @bind="_comfyUrl" required disabled="@Busy" />
+                                    <p class="field-hint">Check connection opens a credentials dialog when Cloudflare Access is detected. Use Authentication to add, replace or remove a service token manually.</p>
+                                    <MudButton OnClick="CheckComfyWithAccessAsync" Disabled="Busy" Variant="Variant.Outlined">@(_checking ? "Checking…" : "Check connection")</MudButton>
+                                    <MudButton OnClick="OpenComfyAuthentication" Disabled="Busy" Variant="Variant.Outlined">Authentication…</MudButton>
+                                    @if (_comfyCheck is not null && _comfyCheckedUrl == _comfyUrl.Trim()) { <p class="field-hint" role="status">@_comfyCheck</p> }
+                                    @if (_comfyTransportCheck is { } transports && _comfyCheckedUrl == _comfyUrl.Trim())
+                                    {
+                                        <p class="field-hint" role="status">HTTP: @transports.HttpMessage<br />Live progress: @transports.WebSocketMessage</p>
+                                    }
+                                    <div class="settings-section-actions"><MudButton ButtonType="ButtonType.Submit" Disabled="Busy" Color="Color.Primary" Variant="Variant.Filled">Save connection</MudButton><MudButton OnClick="CancelComfy" Disabled="Busy">Cancel</MudButton></div>
+                                </form>
+                            </section>
+                        }
+                        @if (_visitedProviders.Contains("openrouter"))
+                        {
+                            <section id="ai-connection-openrouter" role="tabpanel" aria-labelledby="ai-provider-openrouter" hidden='@(ConnectionProvider != "openrouter")'>
+                                <form id="connection-openrouter-form" class="settings-card" @onsubmit="SaveOpenRouterAsync" @onsubmit:preventDefault>
+                                    <div class="settings-card-title"><span class="provider-badge">CLOUD</span><h2>OpenRouter</h2></div><p class="key-status">@(_settings.HasOpenRouterKey ? "API key is configured" : "No API key configured")</p>
+                                    <label for="openrouter-key">@(_settings.HasOpenRouterKey ? "Replace API key" : "API key")</label><input id="openrouter-key" class="secret-input" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" data-1p-ignore="true" data-lpignore="true" data-bwignore="true" data-protonpass-ignore="true" @bind="_replacementKey" disabled="@Busy" placeholder="@(_settings.HasOpenRouterKey ? "Leave blank to keep the saved key" : "Enter your OpenRouter key")" />
+                                    @if (_settings.HasOpenRouterKey) { <label class="check-row"><input type="checkbox" @bind="_removeKey" disabled="@Busy" />Remove saved API key</label> }
+                                    <MudButton OnClick="CheckOpenRouterConnectionAsync" Disabled="@(Busy || _removeKey)" Variant="Variant.Outlined">Check key</MudButton>
+                                    @if (_openRouterCheck is not null) { <p class="field-hint" role="status">@_openRouterCheck</p> }
+                                    <p class="field-hint">Checking does not generate text. Your saved key stays protected on this computer.</p>
+                                    <div class="connection-request-settings">
+                                        <label for="openrouter-concurrency">Concurrent requests</label><input id="openrouter-concurrency" type="number" min="1" max="8" step="1" @bind="_openRouterConcurrency" disabled="@Busy" aria-describedby="openrouter-concurrency-hint" />
+                                        <p id="openrouter-concurrency-hint" class="field-hint">Run up to this many OpenRouter requests at once across projects. Lowering the limit lets active requests finish before starting more.</p>
+                                        <p class="field-hint">New requests use the model provider’s temperature and output limits unless the selected LLM profile overrides them. <a href="https://openrouter.ai/docs/api_reference/parameters" target="_blank" rel="noopener noreferrer">About these defaults ↗</a></p>
+                                    </div>
+                                    <div class="settings-section-actions"><MudButton ButtonType="ButtonType.Submit" Disabled="Busy" Color="Color.Primary" Variant="Variant.Filled">Save connection</MudButton><MudButton OnClick="CancelOpenRouter" Disabled="Busy">Cancel</MudButton></div>
+                                </form>
+                            </section>
+                        }
+                        @if (_visitedProviders.Contains("codex"))
+                        {
+                            <section id="ai-connection-codex" role="tabpanel" aria-labelledby="ai-provider-codex" hidden='@(ConnectionProvider != "codex")'>
+                                <lumibelle.Components.AI.CodexSettingsPanel Settings="_settings.Codex" Busy="Busy" SaveSettings="SaveCodexAsync" Active='@(_tab == "connections" && ConnectionProvider == "codex")' />
+                            </section>
+                        }
+                        @if (_visitedProviders.Contains("claudecode"))
+                        {
+                            <section id="ai-connection-claudecode" role="tabpanel" aria-labelledby="ai-provider-claudecode" hidden='@(ConnectionProvider != "claudecode")'>
+                                <lumibelle.Components.AI.ClaudeCodeSettingsPanel Settings="_settings.ClaudeCode" Busy="Busy" SaveSettings="SaveClaudeCodeAsync" />
+                            </section>
+                        }
+                    </div>
+                </div>
+            </section>
+        }
+        @if (_tab is not ("connections" or "loras"))
+        {
+        <section id="ai-panel-@_tab" role="tabpanel" aria-labelledby="ai-tab-@_tab">
+        @if (_tab == "text")
+        {
+            <div class="ai-connections-layout text-models-layout">
+                <AiProviderSidebar Label="Text model providers" TabPrefix="ai-text-provider-" PanelPrefix="ai-text-" Selection="@_connectionProvider" SelectionChanged="SelectProvider" DefaultsLabel="Defaults & profiles" />
+                @if (_connectionProvider == AiProviderSidebar.DefaultsKey)
+                {
+                <section class="text-provider-content text-defaults" id="ai-text-defaults" role="tabpanel" aria-labelledby="ai-text-provider-defaults">
+                    <div class="text-provider-heading"><div><h2>Defaults &amp; profiles</h2><p class="field-hint">Settings for text models from every provider.</p></div></div>
+                    <div class="text-default-control">
+                        <div><label for="global-text-default">Global default</label><p class="field-hint">Studios follow this model until you choose another. Changes save immediately.</p></div>
+                        <select id="global-text-default" @bind:get="DefaultKey" @bind:set="ChangeDefaultAsync" disabled="@Busy">
+                            @foreach (var model in DefaultChoices) { <option value="@TextModelProfiles.ChoiceKey(model)">@DefaultChoiceLabel(model)</option> }
+                        </select>
+                    </div>
+                    <lumibelle.Components.AI.TextModelProfilesPanel SettingsSnapshot="_settings" Models="AllModels" CatalogModel="CatalogModel" Busy="Busy" SaveProfiles="SaveTextProfilesAsync" />
+                    <p class="field-hint"><a href="/settings/ai/probes">Test models and profiles →</a> Compare writing responses and record your own 1–5 fulfillment ratings.</p>
+                    <form id="text-timeout-form" class="settings-card" @onsubmit="SaveTextTimeoutAsync" @onsubmit:preventDefault>
+                        <h3>Request timeout</h3>
+                        <label for="timeout">Text inactivity timeout in seconds<input id="timeout" type="number" min="5" max="3600" @bind="_timeout" disabled="@Busy" /></label>
+                        <p class="field-hint">Stop when no new text or generation progress arrives for this long; active requests can continue longer. The timeout starts when a request starts, not while it waits in Lumibelle. Queued requests keep their captured value.</p>
+                        <div class="settings-section-actions"><MudButton ButtonType="ButtonType.Submit" Disabled="@(Busy || _timeout == _settings.TimeoutSeconds)" Variant="Variant.Outlined" Size="Size.Small">Save timeout</MudButton><MudButton OnClick="CancelTextTimeout" Disabled="Busy" Size="Size.Small">Cancel</MudButton></div>
+                    </form>
+                </section>
+                }
+                else
+                {
+                <section class="text-provider-content" id="ai-text-@_connectionProvider" role="tabpanel" aria-labelledby="ai-text-provider-@_connectionProvider">
+                    <div class="text-provider-heading"><div><h2>@TextModelPolicy.ProviderName(TextBackend) models</h2><p class="field-hint">Star models to add them to your studio pickers.</p></div>
+                        <MudButton OnClick="() => RefreshTextAsync(TextBackend)" Disabled="@(Busy || TextState.Refreshing)" Size="Size.Small" aria-label="@($"Refresh {TextModelPolicy.ProviderName(TextBackend)} models")">@(TextState.Refreshing ? "Loading…" : "Refresh")</MudButton>
+                    </div>
+                    <div class="text-provider-status" role="status">
+                        @if (TextState.Refreshing) { <span>Loading @TextModelPolicy.ProviderName(TextBackend) models…</span> }
+                        else if (TextState.Message is not null) { <span class="field-error">@TextState.Message</span>@if (TextState.Catalog is not null) { <span> Showing the last loaded catalog · may be out of date.</span> } }
+                        @if (TextState.Refreshed is { } refreshed) { <span> Updated <time datetime="@refreshed.ToString("O")">@refreshed.ToLocalTime().ToString("MMM d, HH:mm")</time>.</span> }
+                    </div>
+                    @if (TextBackend == AiBackend.ComfyUI)
+                    {
+                    <details class="text-generation-fallback" open="@_providerDefaultsOpen"><summary @onclick="() => _providerDefaultsOpen = !_providerDefaultsOpen" @onclick:preventDefault>ComfyUI defaults</summary>
+                        <form id="comfy-text-settings-form" class="text-generation-settings" @onsubmit="SaveComfyTextAsync" @onsubmit:preventDefault>
+                            <p class="field-hint">Used by ComfyUI text models without their own settings. Queued requests keep their captured values.</p>
+                            <div class="text-generation-fields">
+                                <label for="temperature">Temperature<input id="temperature" type="number" min="0.01" max="2" step="0.01" @bind="_temperature" disabled="@Busy" /></label>
+                                <label for="max-tokens">Maximum output tokens<input id="max-tokens" type="number" min="1" max="32768" @bind="_maxTokens" disabled="@Busy" /></label>
+                            </div>
+                            <p class="field-hint">Lower temperature is more predictable; higher values add variety. Asset extraction uses 0.2 unless a profile overrides it. ComfyUI text thinking is disabled.</p>
+                            <div class="text-generation-actions"><MudButton ButtonType="ButtonType.Submit" Disabled="Busy" Variant="Variant.Outlined" Size="Size.Small">Save generation defaults</MudButton><MudButton OnClick="CancelComfyText" Disabled="Busy" Size="Size.Small">Cancel</MudButton></div>
+                        </form>
+                        </details>
+                    }
+                    @if (TextBackend == AiBackend.Codex && _settings.Codex.Enabled || TextBackend == AiBackend.ClaudeCode && _settings.ClaudeCode.Enabled)
+                    {
+                        var provider = TextModelPolicy.ProviderName(TextBackend); var effortId = _connectionProvider + "-text-effort";
+                        <details class="text-generation-fallback" open="@_providerDefaultsOpen"><summary @onclick="() => _providerDefaultsOpen = !_providerDefaultsOpen" @onclick:preventDefault>@provider defaults</summary>
+                        <form class="codex-text-default" @onsubmit="SaveTextEffortAsync" @onsubmit:preventDefault>
+                            <div><div class="field-label-help"><label for="@effortId">Default @provider reasoning effort</label><HelpHint Label="@($"Default {provider} reasoning effort")" Text="@(TextBackend == AiBackend.Codex
+                                    ? "Used by Codex text assistance across projects, unless a project default or request override specifies an effort. Model default uses each model's reported default. Image generation has its own setting under Image models."
+                                    : "Used by Claude Code text assistance across projects, unless a project default or request override specifies an effort. Model default lets Claude Code choose; unsupported levels fall back to the highest level the model supports.")" /></div>
+                                <select id="@effortId" @bind="TextEffortDraft" disabled="@Busy"><option value="">Model default</option>
+                                    @foreach (var effort in TextEfforts) { <option value="@effort">@effort</option> }
+                                    @if (TextEffortDraft.Length > 0 && !TextEfforts.Contains(TextEffortDraft)) { <option value="@TextEffortDraft">@TextEffortDraft · refresh @provider to check</option> }
+                                </select>
+                            </div>
+                            <div class="codex-text-default-actions"><MudButton ButtonType="ButtonType.Submit" Disabled="@(Busy || TextEffortDraft == (TextModelPolicy.DefaultEffort(TextBackend, _settings) ?? ""))" Variant="Variant.Outlined" Size="Size.Small">Save default effort</MudButton><MudButton OnClick="() => CancelTextEffort(TextBackend)" Disabled="@Busy" Size="Size.Small">Cancel</MudButton></div>
+                        </form>
+                        </details>
+                    }
+                    <div class="text-catalog-toolbar">
+                        <div class="text-catalog-search"><label class="sr-only" for="model-search">Search text models</label><input id="model-search" type="search" placeholder="Search models…" @bind="_search" @bind:event="oninput" @bind:after="ResetPage" /></div>
+                        <div class="model-list-filter" role="group" aria-label="Show models"><button type="button" aria-pressed="@(!_starredOnly ? "true" : "false")" @onclick="() => FilterStars(false)">All</button><button type="button" aria-pressed="@(_starredOnly ? "true" : "false")" @onclick="() => FilterStars(true)">★ Starred <span>@_settings.StarredTextModels.Count(m => m.Backend == TextBackend)</span></button></div>
+                        <div class="text-catalog-sort mobile-model-sort"><label for="model-sort">Sort</label><select id="model-sort" @bind="TextState.Sort" @bind:after="MobileSortChanged">
+                            @foreach (var column in ModelColumns) { <option value="@column.Key">@column.Label</option> }
+                        </select><button type="button" class="model-sort-direction" aria-label="@(TextState.Descending ? "Switch to ascending order" : "Switch to descending order")" @onclick="ReverseSort">@(TextState.Descending ? "↓ Desc" : "↑ Asc")</button></div>
+                    </div>
+                    @if (TextBackend == AiBackend.OpenRouter) { <p class="text-pricing-caption">Input/output prices are USD per million tokens. Conditional rates may apply. <a href="https://openrouter.ai/docs/api_reference/limits" target="_blank" rel="noopener noreferrer">Free-model limits ↗</a><br />Added is the OpenRouter listing date. Popularity follows its weekly usage ordering. <a href="https://openrouter.ai/rankings" target="_blank" rel="noopener noreferrer">OpenRouter rankings ↗</a></p> }
+                    <p class="text-model-count">@FilteredModels.Count model@(FilteredModels.Count == 1 ? "" : "s")</p>
+                    <div class="model-table-scroll">
+                    <div class="text-model-list text-model-table" role="table" aria-label="Text models" data-provider="@_connectionProvider">
+                        <div role="rowgroup" class="model-table-head"><div role="row" class="model-table-columns">
+                            @foreach (var column in ModelColumns)
+                            {
+                                <div role="columnheader" aria-sort="@SortAria(column.Key)" data-column="@column.Key"><button type="button" title="@column.Help" aria-label="@SortButtonLabel(column)" @onclick="() => SortBy(column.Key)">@column.Label <span aria-hidden="true">@SortArrow(column.Key)</span></button></div>
+                            }
+                        </div></div>
+                        @foreach (var model in PagedModels)
+                        {
+                            var key = TextModelPolicy.Key(model); var starred = IsStarred(model); var issue = ModelIssue(model); var name = ModelName(model);
+                            var domId = ModelDomId(model); var expanded = TextState.Expanded == key; var catalog = CatalogModel(model); var info = catalog?.Catalog;
+                            var testStatus = model.Backend == AiBackend.OpenRouter ? HostedTestStatus(model) : null;
+                            <article class="text-model-row" role="rowgroup" @key="key" data-model-key="@key">
+                                <div class="text-model-row-main model-table-columns" role="row">
+                                    <div class="text-model-name-cell" role="cell">
+                                    <button type="button" class="model-star @(starred ? "starred" : "")" aria-label="@(starred ? $"Unstar {name}" : $"Star {name}")" aria-pressed="@(starred ? "true" : "false")" title="@(starred ? "Remove from starred models" : issue ?? "Add to starred models")" disabled="@(Busy || (!starred && issue is not null))" @onclick="() => ToggleStarAsync(model)"><MudIcon Icon="@(starred ? Icons.Material.Filled.Star : Icons.Material.Outlined.StarBorder)" /></button>
+                                    <div class="text-model-info"><div class="text-model-title"><button type="button" class="text-model-expand" aria-expanded="@(expanded ? "true" : "false")" aria-controls="@domId" @onclick="() => ExpandModel(model)">@name</button>@if (TextModelPolicy.Same(model, TextModelPolicy.Default(_settings))) { <span class="model-default-tag">Default</span> }</div>
+                                        @if (ModelStatus(model) is { } status) { <p class="text-model-status">@status</p> }
+                                        @if (testStatus is not null) { <p class="text-model-test-status" title="@testStatus.Detail">@testStatus.Label</p> }
+                                        @if (TextBackend == AiBackend.OpenRouter)
+                                        {
+                                            <div class="text-model-facts">
+                                                @if (info?.Pricing?.FreeText == true) { <span class="text-free-badge">Free text</span> }
+                                                @if (info?.Pricing?.Conditional == true) { <span>Conditional rates</span> }
+                                                @if (catalog?.SupportsImages == true) { <span>Image input</span> }
+                                                @if (info?.SupportsReasoning == true) { <span>Reasoning</span> }
+                                            </div>
+                                        }
+                                    </div>
+                                    </div>
+                                    @foreach (var column in ModelColumns.Skip(1))
+                                    {
+                                        <div role="cell" class="model-value-cell" data-column="@column.Key" title="@column.Help"><span class="model-cell-label">@column.Label</span><span>@ColumnValue(model, column.Key)</span></div>
+                                    }
+                                </div>
+                                @if (_pendingStar is not null && TextModelPolicy.Same(_pendingStar, model) && testStatus?.WarnBeforeStarring == true)
+                                {
+                                    <div role="row"><div role="cell" aria-colspan="@ModelColumns.Length">
+                                        <section class="model-star-warning" aria-label="Test before starring">
+                                            <div role="alert"><strong>Test @name before starring?</strong>
+                                                <p>@testStatus?.Detail</p>
+                                                <p>Free models can hit request limits or provider capacity even when listed. A completed benchmark checks one request; it does not guarantee future availability. <a href="https://openrouter.ai/docs/api_reference/limits" target="_blank" rel="noopener noreferrer">Free-model limits ↗</a></p>
+                                            </div>
+                                            <div class="model-star-warning-actions">
+                                                <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@Busy" OnClick="() => TestBeforeStarringAsync(model)">Test model</MudButton>
+                                                <MudButton Disabled="@(Busy || issue is not null)" OnClick="() => ToggleStarAsync(model, confirmed: true)">Star anyway</MudButton>
+                                                <MudButton Disabled="@Busy" OnClick="() => _pendingStar = null">Cancel</MudButton>
+                                            </div>
+                                        </section>
+                                    </div></div>
+                                }
+                                @if (expanded)
+                                {
+                                    <div role="row"><div role="cell" aria-colspan="@ModelColumns.Length" class="text-model-details" id="@domId">
+                                        <dl><dt>Original name</dt><dd>@(CatalogName(model) ?? model.Name)</dd><dt>Model ID</dt><dd><code>@model.Model</code></dd>
+                                            @if (model.Backend == AiBackend.ComfyUI) { <dt>Server</dt><dd>@model.ComfyUrl</dd> }
+                                            @if (TextModelPolicy.UsesNamedEffort(model.Backend) && catalog is not null)
+                                            {
+                                                @if (catalog.ReasoningEfforts is { Count: > 0 } efforts) { <dt>Reasoning effort</dt><dd>@string.Join(", ", efforts)</dd> }
+                                                @if (catalog.DefaultEffort is { } defaultEffort) { <dt>Model default effort</dt><dd>@defaultEffort</dd> }
+                                                @if (catalog.SupportsImages) { <dt>Input</dt><dd>Text and images</dd> }
+                                            }
+                                        </dl>
+                                        @if (testStatus is not null) { <p class="field-hint">@testStatus.Detail</p> }
+                                        <form class="model-alias-form" @onsubmit="() => SaveAliasAsync(model)" @onsubmit:preventDefault>
+                                            <label for="@(domId + "-alias")">Alias</label><input id="@(domId + "-alias")" maxlength="120" @bind="_aliasDrafts[key]" @bind:event="oninput" disabled="@Busy" placeholder="Use the original name" />
+                                            <p class="field-hint">Shown in settings and studio pickers. Clear to restore the original name.</p>
+                                            <div><MudButton ButtonType="ButtonType.Submit" Disabled="@(Busy || _aliasDrafts[key] == _settings.TextModelAliases.GetValueOrDefault(key, ""))" Size="Size.Small">Save alias</MudButton><MudButton OnClick="() => CancelAlias(model)" Disabled="@Busy" Size="Size.Small">Cancel alias</MudButton></div>
+                                        </form>
+                                        @if (model.Backend == AiBackend.ComfyUI)
+                                        {
+                                            var draft = TextDraft(model);
+                                            <form class="model-generation-settings" aria-label="Model generation settings" @onsubmit="() => SaveTextDraftAsync(model)" @onsubmit:preventDefault>
+                                                <h4>Generation settings</h4>
+                                                <div class="text-generation-fields">
+                                                    <label for="@(domId + "-tokens")">Maximum reply tokens<input id="@(domId + "-tokens")" type="number" min="1" max="32768" @bind="draft.Tokens" disabled="@Busy" /></label>
+                                                    <label for="@(domId + "-temperature")">Model temperature<input id="@(domId + "-temperature")" type="number" min="0.01" max="2" step="0.01" @bind="draft.Temperature" disabled="@Busy" /></label>
+                                                    <label for="@(domId + "-vision")">Image input (VL compatibility)<select id="@(domId + "-vision")" @bind="draft.VisionInput" disabled="@Busy">
+                                                        <option value="@ComfyVisionInput.Disabled">Disabled — text only</option>
+                                                        <option value="@ComfyVisionInput.SingleImage">Single image</option>
+                                                        <option value="@ComfyVisionInput.ImageBatch">Image batch — multiple references</option>
+                                                    </select></label>
+                                                </div>
+                                                <p class="field-hint">@(_settings.ComfyTextModels.ContainsKey(key) ? "Saved for this model and ComfyUI server." : "Currently using ComfyUI defaults.") Asset extraction uses temperature 0.2; text thinking is disabled.</p>
+                                                <p class="field-hint">Enable image input only for a checkpoint with vision weights supported by ComfyUI's native CLIPLoader and TextGenerate. A text benchmark does not verify vision. Image batch additionally requires a tokenizer that consumes every batch image; some older models/ComfyUI versions read only the first.</p>
+                                                <p class="field-hint">Save, then refresh the studio's model picker. Single-image descriptions keep the captured image; batches preserve aspect ratio and use padding on canvases up to 1024 pixels per side. Use ComfyUI defaults also disables image input.</p>
+                                                <div class="text-generation-actions"><MudButton ButtonType="ButtonType.Submit" Disabled="@Busy" Variant="Variant.Outlined" Size="Size.Small">Save model settings</MudButton><MudButton OnClick="() => CancelTextDraft(model)" Disabled="@Busy" Size="Size.Small">Cancel model settings</MudButton><MudButton OnClick="() => SaveTextDraftAsync(model, true)" Disabled="@(Busy || !_settings.ComfyTextModels.ContainsKey(key))" Size="Size.Small">Use ComfyUI defaults</MudButton></div>
+                                            </form>
+                                        }
+                                        @if (model.Backend is AiBackend.ComfyUI or AiBackend.OpenRouter) { <div class="text-model-actions"><MudButton OnClick="() => OpenModelAsync(model)" Disabled="@Busy" Size="Size.Small">Details &amp; test</MudButton></div> }
+                                        @if (model.Backend == AiBackend.OpenRouter && _settings.OpenRouterTextModelBenchmarks.Where(b => b.Model == model.Model).OrderBy(b => b.CustomPrompt).ThenByDescending(b => b.MeasuredUtc).FirstOrDefault() is { } hostedBenchmark)
+                                        { <OpenRouterBenchmarkDetails Benchmark="hostedBenchmark" /> }
+                                        @if (info?.Description is { Length: > 0 } description) { <p class="text-model-description">@description</p> }
+                                        @if (info?.MaxOutputTokens is { } output) { <p>Maximum output: @OpenRouterModelMetadata.Context(output) tokens</p> }
+                                        @if (info?.Pricing is { } pricing)
+                                        {
+                                            @if (pricing.Additional.Count > 0) { <dl>@foreach (var rate in pricing.Additional) { <dt>@OpenRouterModelMetadata.AdditionalLabel(rate.Key)</dt><dd>@OpenRouterModelMetadata.AdditionalPrice(rate.Key, rate.Value)</dd> }</dl> }
+                                            @if (pricing.Conditional) { <p>Rates vary with conditions such as context size or time. Check the model’s pricing details.</p> }
+                                        }
+                                        @if (model.Backend == AiBackend.OpenRouter) { <a href="@OpenRouterModelMetadata.ModelUrl(model.Model)" target="_blank" rel="noopener noreferrer">Model and pricing details on OpenRouter ↗</a> }
+                                    </div></div>
+                                }
+                            </article>
+                        }
+                    </div>
+                    </div>
+                    @if (FilteredModels.Count == 0 && !TextState.Refreshing) { <div class="model-list-empty"><h3>@(_starredOnly ? "No starred models here yet" : "No matching models")</h3><p>@(_starredOnly ? "Switch to All and star the models you want in your studios." : "Try another search or refresh this provider.")</p></div> }
+                    @if (PageCount > 1) { <div class="model-pagination"><MudButton OnClick="() => _page--" Disabled="@(_page == 0)" Size="Size.Small">Previous</MudButton><span>Page @(Math.Min(_page, PageCount - 1) + 1) of @PageCount</span><MudButton OnClick="() => _page++" Disabled="@(_page + 1 >= PageCount)" Size="Size.Small">Next</MudButton></div> }
+                    <p class="field-hint model-catalog-hint">@if (TextBackend == AiBackend.ComfyUI) { <span>ComfyUI models need a successful test before starring. </span> }<button type="button" class="inline-settings-link" @onclick='() => SelectTab("connections")'>Manage @TextModelPolicy.ProviderName(TextBackend) connection</button></p>
+                </section>
+                }
+            </div>
+        }
+        else if (_tab == "images")
+        {
+            <div class="ai-connections-layout image-models-layout">
+            <AiProviderSidebar Label="Image workflows" TabPrefix="ai-image-" PanelPrefix="ai-image-panel-" Items="ImageEntries" Selection="@ImageEntry" SelectionChanged="SelectImageEntry" DefaultsLabel="Defaults" DefaultsKind="All workflows" />
+            @if (_imageDefaultsSelected)
+            {
+            <form id="image-defaults-form" class="settings-card image-model-form" role="tabpanel" aria-labelledby="ai-image-defaults" @onsubmit="SaveImageDefaultsAsync" @onsubmit:preventDefault>
+                <h2>Image defaults</h2><p>Apply to image requests across projects. Queued requests keep their captured settings.</p>
+                <label for="image-workflow">Default image workflow</label>
+                <select id="image-workflow" @bind="_defaultImageWorkflow" disabled="@Busy">
+                    @foreach (var workflow in Enum.GetValues<ImageWorkflow>()) { <option value="@workflow">@workflow.Label()</option> }
+                </select>
+                <p class="field-hint">Used when neither the request nor its project chooses a workflow. Set up each workflow in its own entry.</p>
+                <label for="image-timeout">Image timeout in seconds<input id="image-timeout" type="number" min="30" max="7200" @bind="_imageTimeout" disabled="@Busy" /></label>
+                <p class="field-hint">The timeout starts when a request starts, not while it waits in Lumibelle.</p>
+                <div class="settings-section-actions"><MudButton ButtonType="ButtonType.Submit" Disabled="Busy" Color="Color.Primary" Variant="Variant.Filled">Save image defaults</MudButton><MudButton OnClick="CancelImageDefaults" Disabled="Busy">Cancel</MudButton></div>
+            </form>
+            }
+            else
+            {
+            <form id="image-workflow-form" class="settings-card image-model-form" role="tabpanel" aria-labelledby="@("ai-image-" + ImageEntry)" @onsubmit="SaveImageWorkflowAsync" @onsubmit:preventDefault>
+                <div class="settings-card-title"><span class="provider-badge">@(IsCodex ? "LOCAL CLI" : "SERVER")</span><h2>@_imageWorkflow.Label()</h2></div>
+                @if (_imageWorkflow == _settings.DefaultImageWorkflow) { <p class="field-hint">This is the default image workflow.</p> }
+                @if (IsCodex)
+                {
+                    <p class="field-hint">Codex uses a fresh temporary conversation per candidate. Aspect is requested in the instruction; actual image dimensions are retained. Up to eight ordered edit references.</p>
+                    <p class="field-hint" id="codex-image-model-help"><strong>Image model: managed by Codex.</strong> Choose the agent that directs generation and edits below. Codex selects the underlying image model automatically.</p>
+                    <MudButton OnClick="RefreshImagesAsync" Disabled="Busy">Refresh Codex models</MudButton>
+                    <label for="codex-image-model">Codex agent model</label><select id="codex-image-model" aria-describedby="codex-image-model-help codex-agent-guide" @bind="_codexImageModel" @bind:after="() => _codexImageEffort = string.Empty" disabled="@Busy">
+                        @if (_imageModels.All(m => m.Id != _codexImageModel)) { <option value="@_codexImageModel">@(_codexImageModel.Length == 0 ? "Choose a model…" : _codexImageModel)</option> }
+                        @foreach (var model in _imageModels) { <option value="@model.Id">@model.Name</option> }
+                    </select>
+                    <p class="field-hint" id="codex-agent-guide">Start with <strong>Luna</strong> for clear prompts and simple edits. Try <strong>Terra</strong> for more involved requests, or <strong>Sol / Astra</strong> for difficult instructions with many constraints. <a class="inline-settings-link" href="https://learn.chatgpt.com/docs/models#choosing-astra-sol-terra-and-luna" target="_blank" rel="noopener noreferrer">OpenAI’s model selection guide ↗</a></p>
+                    <label for="codex-image-effort">Agent reasoning effort</label><select id="codex-image-effort" aria-describedby="codex-image-effort-help" @bind="_codexImageEffort" disabled="@Busy">
+                        <option value="">Model default</option>
+                        @foreach (var effort in _imageModels.FirstOrDefault(m => m.Id == _codexImageModel)?.ReasoningEfforts ?? []) { <option value="@effort">@effort</option> }
+                        @if (_codexImageEffort.Length > 0 && _imageModels.FirstOrDefault(m => m.Id == _codexImageModel)?.ReasoningEfforts?.Contains(_codexImageEffort) != true) { <option value="@_codexImageEffort">@_codexImageEffort · unavailable</option> }
+                    </select>
+                    <p class="field-hint" id="codex-image-effort-help">Start with <strong>Model default</strong>. Higher effort allows more planning, but takes longer.</p>
+                    @if (_imageEditCheck is not null) { <p role="status">@_imageEditCheck</p> }
+                }
+                else
+                {
+                <p class="field-hint">@(IsQwen ? "Qwen Image 2.1 creates and edits with up to ten ordered references. Use the Qwen3-VL 8B encoder and the separate Qwen Image 2.1 VAE. Default: 25 Euler/simple steps, CFG 1, about 1 MP; up to 2K (~4 MP)." : IsKlein ? "Klein KV creates images and combines up to eight references for edits. Uses Qwen3 8B and the FLUX.2 VAE, with four Euler steps." : "Krea 2 creates images and edits one source using the identity-edit LoRA.") You can switch workflows for each run in Assets.</p>
+                @if (IsKlein) { <a href="https://github.com/Comfy-Org/workflow_templates/blob/main/templates/image_flux2_klein_9b_kv_image_edit.json" target="_blank" rel="noopener noreferrer">Official ComfyUI Klein KV workflow</a> }
+                <MudButton OnClick="RefreshImagesAsync" Disabled="Busy" Variant="Variant.Outlined">Refresh image models</MudButton>
+                            <label for="comfy-image-model">@(IsQwen ? "Qwen Image 2.1 model" : IsKlein ? "Klein 9B KV model" : "Krea 2 model")</label><select id="comfy-image-model" @bind="ImageModel" disabled="@Busy">
+                                @if (_imageModels.All(model => model.Id != ImageModel)) { <option value="@ImageModel">@ImageModel</option> }
+                                @foreach (var model in _imageModels) { <option value="@model.Id">@model.Name</option> }
+                            </select>
+                            <label for="comfy-image-encoder">Image text encoder</label><select id="comfy-image-encoder" @bind="ImageEncoder" disabled="@Busy">
+                                @if (_imageEncoders.All(model => model.Id != ImageEncoder)) { <option value="@ImageEncoder">@ImageEncoder</option> }
+                                @foreach (var model in _imageEncoders) { <option value="@model.Id">@model.Name</option> }
+                            </select>
+                            <label for="comfy-image-vae">Image VAE</label><select id="comfy-image-vae" @bind="ImageVae" disabled="@Busy">
+                                @if (_imageVaes.All(model => model.Id != ImageVae)) { <option value="@ImageVae">@ImageVae</option> }
+                                @foreach (var model in _imageVaes) { <option value="@model.Id">@model.Name</option> }
+                            </select>
+                            @if (!IsKlein && !IsQwen)
+                            {
+                            <label for="comfy-image-edit-lora">Krea 2 Edit LoRA</label><select id="comfy-image-edit-lora" @bind="_comfyImageEditLora" disabled="@Busy">
+                                @if (_imageEditLoras.All(model => model.Id != _comfyImageEditLora)) { <option value="@_comfyImageEditLora">@_comfyImageEditLora</option> }
+                                @foreach (var model in _imageEditLoras) { <option value="@model.Id">@model.Name</option> }
+                            </select>
+                            }
+                            @if (IsQwen) {
+                                <p class="field-hint">The file lists show installed files, not tested architectural compatibility. Refresh does not substitute different Qwen model files automatically. Editing uses comfyui-tooling-nodes, as the existing local edit workflows do.</p>
+                                <label for="qwen-cache-device">Edit prefix cache device</label>
+                                <select id="qwen-cache-device" value="@_qwen.CacheDevice" @onchange='e => _qwen = _qwen with { CacheDevice = e.Value?.ToString() ?? "auto" }' disabled="@Busy">
+                                    <option value="auto">Auto</option><option value="gpu">GPU</option><option value="cpu">CPU / RAM</option><option value="off">Off</option>
+                                </select>
+                                <label for="qwen-cache-dtype">Edit prefix cache precision</label>
+                                <select id="qwen-cache-dtype" value="@_qwen.CacheDtype" @onchange='e => _qwen = _qwen with { CacheDtype = e.Value?.ToString() ?? "default" }' disabled="@Busy">
+                                    <option value="default">Default model precision</option><option value="int8">INT8</option><option value="int4">INT4</option>
+                                </select>
+                                <p class="field-hint">Auto/default follows the supplied edit workflow. Quantized caches trade accuracy for lower memory use. These settings affect new requests only.</p>
+                            }
+                            @if (_imageEditCheck is not null) { <p class="field-hint">@_imageEditCheck</p> }
+
+                }
+                <div class="settings-section-actions"><MudButton ButtonType="ButtonType.Submit" Disabled="Busy" Color="Color.Primary" Variant="Variant.Filled">Save @_imageWorkflow.Label()</MudButton><MudButton OnClick="CancelImageWorkflow" Disabled="Busy">Cancel</MudButton></div>
+            </form>
+            }
+            </div>
+        }
+        else if (_tab == "video")
+        {
+            <div class="ai-connections-layout video-models-layout">
+                <AiProviderSidebar Label="Video settings" TabPrefix="ai-video-" PanelPrefix="ai-video-panel-" Items="VideoSettingsPanel.Sections" Selection="@_videoSection" SelectionChanged="key => _videoSection = key" DefaultsLabel="Defaults" DefaultsKind="All video" />
+                <VideoSettingsPanel Section="@_videoSection" Settings="_settings" Busy="Busy" SaveSettings="SaveVideoSettingsAsync" />
+            </div>
+        }
+        </section>
+        }
+        <section id="ai-panel-loras" role="tabpanel" aria-labelledby="ai-tab-loras" hidden='@(_tab != "loras")'>
+            <LoraLibraryPanel Settings="_settings" Busy="Busy" SaveLibrary="SaveLoraLibraryAsync" />
+        </section>
+    </div>
+}
+
+
+<InlineDialog Visible="_accessDialogOpen" Options="AccessDialogOptions" Class="comfy-access-dialog" Title="ComfyUI authentication" Context="@_accessDialogServer">
+    <DialogContent>
+        @if (_accessDialogOpen)
+        {
+            <lumibelle.Components.AI.ComfyAccessEditor @key="_accessDialogServer" ServerUrl="@_accessDialogServer" Reason="@_accessReason"
+                SaveConnection="SaveAccessConnectionAsync" Completed="AccessConnectionSavedAsync" Cancelled="CloseAccessDialog" CredentialsChanged="AccessCredentialsChanged" />
+        }
+    </DialogContent>
+</InlineDialog>

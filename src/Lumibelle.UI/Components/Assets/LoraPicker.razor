@@ -1,0 +1,137 @@
+@inject NavigationManager Navigation
+@using System.Globalization
+
+<section class="lora-panel generation-advanced" aria-label="LoRAs">
+    <div class="lora-picker-heading"><label for="@InputId">Add LoRA</label><a href="@EffectiveManageUrl">Manage LoRAs</a></div>
+    <MudAutocomplete T="LoraDefinition" @ref="_picker" InputId="@InputId" Class="lora-autocomplete" PopoverClass="lora-options"
+        Placeholder="Search name, path, or tag…" Variant="Variant.Outlined" Margin="Margin.Dense" Dense="true"
+        Disabled="@Disabled" SearchFunc="Search" ValueChanged="Add" CoerceText="false" ToStringFunc="@(d => d?.Reference.Name ?? string.Empty)"
+        OpenChanged="PickerOpenChanged" ShowProgressIndicator="true" MaxItems="30" MaxHeight="300" DebounceInterval="150">
+        <ItemTemplate Context="definition"><div class="lora-option"><strong>@definition.Reference.Name</strong><small>@definition.Reference.FileName</small></div></ItemTemplate>
+        <ProgressIndicatorInPopoverTemplate><p class="lora-picker-message" role="status">Checking available LoRAs…</p></ProgressIndicatorInPopoverTemplate>
+        <NoItemsTemplate><p class="lora-picker-message" role="status">No matching LoRAs. Try another search or manage your library.</p></NoItemsTemplate>
+        <MoreItemsTemplate><p class="lora-picker-message">Showing the first 30 matches. Type to narrow the list.</p></MoreItemsTemplate>
+    </MudAutocomplete>
+    @if (HiddenCount > 0) { <p class="field-hint">@HiddenCount hidden by <a href="@ProjectSettingsUrl">project visibility</a>.</p> }
+    @if (Check is { Success: false }) { <p class="field-hint" role="status">@Check.Message</p> }
+    @if (Latest.Count > 0)
+    {
+        <details class="lora-selections" open="@_selectionsExpanded">
+            <summary @onclick="ToggleSelections" @onclick:preventDefault="true">Selected LoRAs (@Latest.Count) <span>· @Latest.Count(s => s.Enabled && s.Strength != 0) active</span></summary>
+            @foreach (var (item, index) in Latest.Select((s, i) => (s, i)))
+            {
+                var definition = Settings.LoraLibrary.FirstOrDefault(d => LoraPolicy.Same(d.Reference, item.Reference));
+                var name = definition?.Reference.Name ?? item.Reference.Name;
+                <div class="lora-row" @key="LoraPolicy.Key(item.Reference)" data-lora-file="@item.Reference.FileName">
+                    <label class="check-row"><input type="checkbox" checked="@item.Enabled" disabled="@Disabled" @onchange="e => Update(item, s => s with { Enabled = e.Value is true })" @ref="_toggles[LoraPolicy.Key(item.Reference)]" />@name</label>
+                    <small>@item.Reference.FileName</small>
+                    @if (definition is not null) { <div class="lora-tags">@foreach (var tag in definition.Tags) { <span>@tag</span> }</div> }
+                    <label>Strength<input type="number" aria-label="Strength for @name" min="@(Check?.MinimumStrength ?? -100)" max="@(Check?.MaximumStrength ?? 100)" step="0.01" value="@(_invalidStrengths.GetValueOrDefault(LoraPolicy.Key(item.Reference)) ?? item.Strength.ToString(CultureInfo.InvariantCulture))" disabled="@Disabled" @oninput="e => Strength(item, e)" /></label>
+                    <div class="lora-actions">
+                        <button type="button" aria-label="Move @name up" @onclick="() => Move(item, -1)" disabled="@(Disabled || index == 0)">↑</button>
+                        <button type="button" aria-label="Move @name down" @onclick="() => Move(item, 1)" disabled="@(Disabled || index == Latest.Count - 1)">↓</button>
+                        <button type="button" aria-label="Remove @name" @onclick="() => Remove(item)" disabled="@Disabled">Remove</button>
+                        @if (!string.IsNullOrWhiteSpace(definition?.TriggerText))
+                        { <button type="button" disabled="@Disabled" @onclick="() => InsertTrigger.InvokeAsync(definition.TriggerText)">@TriggerButtonText</button> }
+                    </div>
+                    @if (!string.IsNullOrWhiteSpace(definition?.TriggerText)) { <small>Trigger: @definition.TriggerText</small> }
+                    @if (LoraPolicy.Issue(item, Settings, Workflow, Check, Visibility) is { } issue) { <p class="field-hint">@issue</p> }
+                </div>
+            }
+        </details>
+    }
+    @if (_invalidStrengths.Count > 0) { <p role="alert" class="generation-error">Enter valid strengths within the loader’s supported range.</p> }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public AiSettings Settings { get; set; } = new();
+    [Parameter] public string InputId { get; set; } = "lora-add";
+    [Parameter] public LoraWorkflow Workflow { get; set; }
+    [Parameter] public IReadOnlyList<LoraSelection> Selections { get; set; } = [];
+    [Parameter] public ComfyLoraCheck? Check { get; set; }
+    [Parameter] public LoraVisibility Visibility { get; set; } = new();
+    [Parameter] public string TriggerButtonText { get; set; } = "Insert trigger into prompt";
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public string? ManageUrl { get; set; }
+    private string EffectiveManageUrl => ManageUrl ?? AiSettingsNavigation.Link(Navigation, "loras");
+    [Parameter] public string ProjectSettingsUrl { get; set; } = "";
+    [Parameter] public EventCallback<IReadOnlyList<LoraSelection>> Changed { get; set; }
+    [Parameter] public EventCallback Refresh { get; set; }
+    [Parameter] public EventCallback<string> InsertTrigger { get; set; }
+    [Parameter] public EventCallback<bool> ValidityChanged { get; set; }
+    private Task? _refresh;
+    private readonly Dictionary<string, string> _invalidStrengths = [];
+    private bool _focusPicker;
+    private bool _selectionsExpanded;
+    private void ToggleSelections() => _selectionsExpanded = !_selectionsExpanded;
+    private MudAutocomplete<LoraDefinition> _picker = default!;
+    private readonly Dictionary<string, ElementReference> _toggles = [];
+    private string? _focusSelection;
+    // A parent can pass the published list back a round trip later: inside a MudDialog the
+    // content re-renders only after the browser acknowledges the parent's render. Until the
+    // parent sets parameters again, the next edit builds on what was published, so a strength
+    // typed just before a reorder or toggle is not replaced by the older list.
+    private IReadOnlyList<LoraSelection>? _published;
+    private IReadOnlyList<LoraSelection> Latest => _published ?? Selections;
+    protected override void OnParametersSet() => _published = null;
+    protected override Task OnInitializedAsync() => ValidityChanged.InvokeAsync(true);
+    private IEnumerable<LoraDefinition> Available => Settings.LoraLibrary.Where(d => d.Reference.Workflow == Workflow &&
+        LoraPolicy.Visible(d, Visibility) &&
+        (Workflow != LoraWorkflow.MiniMaxH3Ref2VA || !LoraPolicy.ReservedH3(d.Reference.FileName, Settings.H3)) &&
+        !Latest.Any(s => LoraPolicy.Same(s.Reference, d.Reference)))
+        .OrderBy(d => d.Reference.Name, StringComparer.OrdinalIgnoreCase);
+    private async Task<IEnumerable<LoraDefinition>> Search(string? text, CancellationToken cancellationToken)
+    {
+        if (Disabled) return [];
+        // One catalog check per opening; subsequent keystrokes search the same refreshed library.
+        await (_refresh ??= Refresh.InvokeAsync());
+        cancellationToken.ThrowIfCancellationRequested();
+        var search = text?.Trim() ?? "";
+        return Disabled ? [] : Available.Where(d => d.Reference.Name.Contains(search, StringComparison.OrdinalIgnoreCase) ||
+            d.Reference.FileName.Contains(search, StringComparison.OrdinalIgnoreCase) || d.Tags.Any(t => t.Contains(search, StringComparison.OrdinalIgnoreCase))).ToArray();
+    }
+    private void PickerOpenChanged(bool open) { if (!open) _refresh = null; }
+    private int HiddenCount => Settings.LoraLibrary.Count(d => d.Reference.Workflow == Workflow && !LoraPolicy.Visible(d, Visibility));
+    private async Task Publish(IEnumerable<LoraSelection> values)
+    {
+        if (Disabled) return;
+        var published = values.ToArray(); _published = published;
+        await ValidityChanged.InvokeAsync(_invalidStrengths.Count == 0); await Changed.InvokeAsync(published);
+    }
+    private async Task Add(LoraDefinition? selected)
+    {
+        if (selected is null) return;
+        var definition = Available.FirstOrDefault(d => LoraPolicy.Same(d.Reference, selected.Reference));
+        if (definition is null || Disabled) return;
+        _selectionsExpanded = true;
+        await Publish(Latest.Append(new(definition.Reference, definition.DefaultStrength)));
+        await _picker.ClearAsync();
+    }
+    // Rows are matched by LoRA, not by the record a row rendered: a quick second edit can
+    // arrive from a row rendered before the first edit.
+    private Task Update(LoraSelection item, Func<LoraSelection, LoraSelection> change) =>
+        Publish(Latest.Select(s => LoraPolicy.Same(s.Reference, item.Reference) ? change(s) : s));
+    private async Task Strength(LoraSelection item, ChangeEventArgs args)
+    {
+        if (Disabled) return;
+        if (!float.TryParse(args.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var value) ||
+            LoraPolicy.InvalidStrength(value) || value < (Check?.MinimumStrength ?? -100) || value > (Check?.MaximumStrength ?? 100))
+        { _invalidStrengths[LoraPolicy.Key(item.Reference)] = args.Value?.ToString() ?? ""; await ValidityChanged.InvokeAsync(false); return; }
+        _invalidStrengths.Remove(LoraPolicy.Key(item.Reference));
+        await Update(item, s => s with { Strength = value });
+    }
+    private async Task Remove(LoraSelection item) { if (Disabled) return; _invalidStrengths.Remove(LoraPolicy.Key(item.Reference)); await Publish(Latest.Where(s => !LoraPolicy.Same(s.Reference, item.Reference))); _focusPicker = true; }
+    private Task Move(LoraSelection item, int direction)
+    {
+        if (Disabled) return Task.CompletedTask;
+        var next = Latest.ToList(); var index = next.FindIndex(s => LoraPolicy.Same(s.Reference, item.Reference)); var target = index + direction;
+        if (index < 0 || target < 0 || target >= next.Count) return Task.CompletedTask;
+        _focusSelection = LoraPolicy.Key(next[index].Reference);
+        (next[index], next[target]) = (next[target], next[index]); return Publish(next);
+    }
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_focusPicker) { _focusPicker = false; await _picker.FocusAsync(); }
+        if (_focusSelection is { } key && _toggles.TryGetValue(key, out var toggle)) { _focusSelection = null; await toggle.FocusAsync(); }
+    }
+}

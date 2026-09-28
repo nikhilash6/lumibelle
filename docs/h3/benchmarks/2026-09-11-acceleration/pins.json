@@ -1,0 +1,27 @@
+{
+  "plus": {
+    "repository": "xmarre/Comfyui_Minimax_h3_latent_Upscaler-Plus",
+    "commit": "db76324d6bbf231bebcb9d794e133ef4d4d9ee87",
+    "archive_sha256": "f0502e058756e2b2ca2138593973fd6be54573e6f5bdd3654d198861dbb978d2"
+  },
+  "spectrum": {
+    "repository": "xmarre/ComfyUI-Spectrum-MiniMax-H3",
+    "commit": "455bd357cb45637c8e852f7f448dc57b52de94f8",
+    "archive_sha256": "565042d884e5a902c241b7a3b1360e17ac06b2a924cd10fe4ffecf79ebbe973c"
+  },
+  "cache": {
+    "repository": "duckyshell/ComfyUI-MiniMaxH3-FirstBlockCache",
+    "commit": "725973c3bfd9de6dce249bc93dc5fe27f820df31",
+    "archive_sha256": "ebd660c8f415561f0f3e7edf2f6bc718e2bffb7c0bd4f82fe95e1e86a23a1f73"
+  },
+  "pdd": {
+    "repository": "Jalen-Brunson/ComfyUI-MiniMax-H3-PDD-Acc",
+    "commit": "311a65dd53832d8a5f8177a9d5fb923c09e35a90",
+    "archive_sha256": "b106b37d7e7e9b8ee1773a7387b623065e7e5dd0747de75610ce820004893dab"
+  },
+  "larry": {
+    "repository": "Larryvrh/ComfyUI-MiniMax-H3-Turbo",
+    "commit": "4274783a23afcfdbea3b4876cb79effd6c510785",
+    "archive_sha256": "1c9bba371cb63fb83a937f9bf428946cd548516e752c078e38743a369ddee464"
+  }
+}

@@ -1,0 +1,169 @@
+@using lumibelle.Services.AI
+@using Microsoft.AspNetCore.Components
+@inject IComfyAccessCredentialStore Credentials
+@implements IDisposable
+
+<div class="comfy-access-editor">
+    <p>Service-token credentials will be used only for <strong>@_origin</strong>.</p>
+    @if (!string.IsNullOrEmpty(Reason)) { <p class="field-hint">@Reason</p> }
+    <p class="field-hint">Use an Access <strong>Client ID</strong> and <strong>Client Secret</strong> allowed by a <strong>Service Auth</strong> policy, not a Cloudflare account API token.</p>
+    @if (_error is not null) { <MudAlert Severity="Severity.Error" role="alert">@_error</MudAlert> }
+    @if (_message is not null) { <p role="status">@_message</p> }
+    @if (_loading) { <p role="status">Loading saved credential status…</p> }
+    else if (_snapshot is not null)
+    {
+        <form class="comfy-access-token-form" @onsubmit="Save" @onsubmit:preventDefault>
+            <fieldset disabled="@(_busy || _tokenSaved)">
+                <legend>@(_configured ? "Replace service token (optional)" : "Service token")</legend>
+                <p role="status">@(_configured ? "A token is already saved for this server. Leave both fields blank to keep it." : "No service token is saved for this server.")</p>
+                <label for="access-dialog-client-id">Client ID</label>
+                <input id="access-dialog-client-id" type="text" @bind="_clientId" @bind:event="oninput" maxlength="4096" autocomplete="off" autocapitalize="none" spellcheck="false" />
+                <label for="access-dialog-client-secret">Client Secret</label>
+                <input id="access-dialog-client-secret" type="password" @bind="_clientSecret" @bind:event="oninput" maxlength="4096" autocomplete="new-password" autocapitalize="none" spellcheck="false" />
+            </fieldset>
+            <p class="field-hint">Saving protects the token on this installation, saves the ComfyUI connection URL, then repeats the connection check. No generation is submitted.</p>
+            <div class="access-dialog-actions">
+                <MudButton ButtonType="ButtonType.Submit" Color="Color.Primary" Variant="Variant.Filled" Disabled="_busy">@(_busy ? "Saving…" : _tokenSaved ? "Retry saving connection" : "Save connection and retry")</MudButton>
+                <MudButton OnClick="Cancel" Variant="Variant.Outlined" Disabled="_busy">@(_tokenSaved ? "Close" : "Cancel")</MudButton>
+            </div>
+        </form>
+        <div class="access-dialog-management">
+            <MudButton OnClick="Reload" Variant="Variant.Text" Disabled="_busy" Size="Size.Small">Reload saved credentials</MudButton>
+            @if (_configured && !_tokenSaved)
+            { <MudButton OnClick="() => _confirmRemove = true" Color="Color.Error" Variant="Variant.Text" Disabled="_busy" Size="Size.Small">Remove saved credentials…</MudButton> }
+        </div>
+        @if (_confirmRemove)
+        {
+            <div class="access-remove-confirmation" role="group" aria-label="Confirm credential removal">
+                <p>Remove the saved token for @_origin? This does not revoke it in Cloudflare or cancel running generations.</p>
+                <MudButton OnClick="Remove" Color="Color.Error" Variant="Variant.Filled" Disabled="_busy">Confirm removal</MudButton>
+                <MudButton OnClick="() => _confirmRemove = false" Variant="Variant.Outlined" Disabled="_busy">Keep credentials</MudButton>
+            </div>
+        }
+    }
+    else
+    {
+        <MudButton OnClick="Reload" Variant="Variant.Filled" Color="Color.Primary" Disabled="_busy">Retry loading credentials</MudButton>
+        <MudButton OnClick="Cancel" Variant="Variant.Outlined" Disabled="_busy">Cancel</MudButton>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public string ServerUrl { get; set; } = "";
+    [Parameter] public string? Reason { get; set; }
+    // Null means success; otherwise the parent supplies a safe connection-save error.
+    [Parameter, EditorRequired] public Func<string, Task<string?>> SaveConnection { get; set; } = null!;
+    [Parameter] public EventCallback Completed { get; set; }
+    [Parameter] public EventCallback Cancelled { get; set; }
+    [Parameter] public EventCallback CredentialsChanged { get; set; }
+
+    private readonly CancellationTokenSource _lifetime = new();
+    private ComfyAccessSettings? _snapshot;
+    private string _server = "", _origin = "", _clientId = "", _clientSecret = "";
+    private string? _error, _message;
+    private bool _configured, _loading = true, _busy, _disposed, _tokenSaved, _confirmRemove;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Pin the destination for the lifetime of this dialog. Never use a login
+        // redirect target or a subsequently edited parent URL to save credentials.
+        _server = ServerUrl;
+        try { _origin = ComfyAccessOrigin.FromServerUrl(_server); await ReadSnapshot(); }
+        catch (OperationCanceledException) when (_disposed) { }
+        catch (Exception e) { if (!_disposed) _error = SafeError(e); }
+        finally { _loading = false; }
+    }
+
+    private async Task ReadSnapshot()
+    {
+        var value = await Credentials.LoadAsync(_lifetime.Token);
+        if (_disposed) return;
+        _snapshot = value;
+        _configured = value.Entries.Any(e => e.Origin == _origin);
+    }
+
+    private async Task Reload()
+    {
+        if (_busy) return;
+        _busy = true; _error = null;
+        try
+        {
+            _origin = ComfyAccessOrigin.FromServerUrl(_server);
+            await ReadSnapshot();
+            if (!_disposed)
+            {
+                _confirmRemove = false;
+                if (!_configured) _tokenSaved = false;
+                _message = "Saved credential status reloaded. Entered values have not been saved.";
+            }
+        }
+        catch (OperationCanceledException) when (_disposed) { }
+        catch (Exception e) { if (!_disposed) _error = SafeError(e); }
+        finally { _busy = false; }
+    }
+
+    private async Task Save()
+    {
+        if (_busy || _snapshot is null) return;
+        _busy = true; _error = null; _message = null;
+        try
+        {
+            if (!_tokenSaved)
+            {
+                if (_clientId.Length != 0 || _clientSecret.Length != 0)
+                {
+                    // Store validation requires a complete pair and preserves its
+                    // optimistic revision check. Do not merge a half-entered token.
+                    var saved = await Credentials.SaveAsync(_server, _clientId, _clientSecret, _snapshot.Revision, _lifetime.Token);
+                    if (_disposed) return;
+                    _snapshot = saved; _configured = true;
+                }
+                else
+                {
+                    await ReadSnapshot();
+                    if (_disposed) return;
+                    if (!_configured) throw new ComfyAccessException("Enter both the Client ID and Client Secret before saving.");
+                }
+                _tokenSaved = true; ClearFields();
+                await CredentialsChanged.InvokeAsync();
+            }
+            var saveError = await SaveConnection(_server);
+            if (_disposed) return;
+            if (saveError is not null)
+            {
+                _error = "Credentials are saved, but the connection URL could not be saved. " + saveError;
+                return;
+            }
+            await Completed.InvokeAsync();
+        }
+        catch (OperationCanceledException) when (_disposed) { }
+        catch (Exception e)
+        {
+            if (!_disposed) _error = (_tokenSaved ? "Credentials are saved. " : "") + SafeError(e);
+        }
+        finally { _busy = false; }
+    }
+
+    private async Task Remove()
+    {
+        if (_busy || !_confirmRemove || _snapshot is null) return;
+        _busy = true; _error = null; _message = null;
+        try
+        {
+            var saved = await Credentials.RemoveAsync(_server, _snapshot.Revision, _lifetime.Token);
+            if (_disposed) return;
+            _snapshot = saved; _configured = false; _tokenSaved = false; _confirmRemove = false; ClearFields();
+            _message = "Saved credentials removed. The ComfyUI server URL is unchanged.";
+            await CredentialsChanged.InvokeAsync();
+        }
+        catch (OperationCanceledException) when (_disposed) { }
+        catch (Exception e) { if (!_disposed) _error = SafeError(e); }
+        finally { _busy = false; }
+    }
+
+    private void ClearFields() { _clientId = ""; _clientSecret = ""; }
+    private async Task Cancel() { if (_busy) return; ClearFields(); await Cancelled.InvokeAsync(); }
+    private static string SafeError(Exception e) => e is ComfyAccessException ? e.Message :
+        "Could not complete the operation. Check credential storage and retry; no token values are shown.";
+    public void Dispose() { _disposed = true; ClearFields(); _lifetime.Cancel(); _lifetime.Dispose(); }
+}

@@ -1,0 +1,150 @@
+@inherits ProjectAwareComponent
+@page "/trash"
+@inject IMediaTrashStore Store
+@inject TimeProvider Clock
+
+<PageTitle>@(Archives ? "Lossless archives" : "Trash") · Lumibelle</PageTitle>
+<div class="library-heading"><div><p class="eyebrow">STORAGE CLEANUP</p><h1 tabindex="-1">@(Archives ? "Lossless archives" : "Trash")</h1></div></div>
+<nav class="cleanup-views" aria-label="Storage cleanup"><a href="/trash" aria-current="@(!Archives ? "page" : null)">Discarded media</a><a href="/trash?view=archives" aria-current="@(Archives ? "page" : null)">Lossless archives</a></nav>
+@if (Archives)
+{
+    <FrameArchiveCleanup />
+}
+else
+{
+<ReferenceReelRecovery />
+<p class="intro-copy">Images, voices, video takes, and saved frames stay here for 30 days. Restore them whenever you need them.</p>
+<p class="trash-cleanup-hint">Automatic cleanup runs while Lumibelle is open and catches up after restart. Permanently deleted media cannot be recovered.</p>
+<div class="trash-toolbar" data-interactive="@(_interactive ? "true" : "false")">
+    <label>Project <select value="@_project" @onchange="FilterChanged"><option value="">All projects</option>@foreach (var project in _library.Items.DistinctBy(r => r.ProjectId)) { <option value="@project.ProjectId">@project.ProjectName</option> }</select></label>
+    <button @ref="_refreshButton" disabled="@_busy" @onclick="RefreshAsync">Refresh</button>
+    <span>@Filtered.Count item@(Filtered.Count == 1 ? "" : "s") · @StorageSize.Format(Filtered.Sum(r => r.Bytes)) in this scope</span>
+    <MudButton Disabled="@(_busy || _selected.Count == 0)" OnClick="() => RestoreAsync(SelectedRows)">Restore selected (@_selected.Count)</MudButton>
+    <MudButton Disabled="@(_busy || _selected.Count == 0)" Color="Color.Error" OnClick="() => Confirm(SelectedRows, false)">Delete selected permanently</MudButton>
+    <MudButton Disabled="@(_busy || Filtered.Count == 0)" Color="Color.Error" Variant="Variant.Outlined" OnClick="() => Confirm(Filtered, true)">Empty Trash</MudButton>
+</div>
+@if (_loading) { <p role="status">Opening Trash…</p> }
+@if (_error is not null) { <MudAlert Severity="Severity.Error">@_error</MudAlert> }
+@foreach (var issue in _library.Issues) { <MudAlert Severity="Severity.Warning">@issue.Message</MudAlert> }
+@if (_notice is not null) { <p role="status" class="trash-notice">@_notice</p> }
+@if (_busy) { <p role="status">@_progress</p> }
+@if (!_loading && Filtered.Count == 0) { <div class="empty-library"><h2>Nothing in Trash@(_project.Length > 0 ? " for this project" : "")</h2><p>Discarded media will appear here.</p></div> }
+<div class="trash-grid">
+@foreach (var row in Paged)
+{
+    var entry = row;
+    <article class="trash-card" @key="entry.Id">
+        <label class="trash-check"><input type="checkbox" checked="@_selected.Contains(entry.Id)" disabled="@_busy" @onchange="args => Select(entry.Id, args.Value is true)" aria-label="Select media from @entry.OwnerName" /> Select</label>
+        <button class="trash-thumbnail" @onclick="() => Preview(row)" disabled="@(entry.Purging || _missing.Contains(entry.Id))" aria-label="Preview media from @entry.OwnerName">
+            @if (!entry.Purging && !_missing.Contains(entry.Id)) { @if (entry.ThumbnailUrl is { } thumbnail) { <img src="@thumbnail" alt="@entry.OwnerName" loading="lazy" @onerror="() => _missing.Add(entry.Id)" /> } else { <span>Voice recording</span> } }
+            else { <span>Media unavailable</span> }
+        </button>
+        <div class="trash-card-body"><a href="@ProjectLink(row.OwnerUrl)">@row.ProjectName</a><h2>@entry.OwnerName</h2>
+            <p class="trash-tags">@(entry.Title.Length == 0 ? entry.Kind.ToString() : entry.Title)</p>
+            <p>@StorageSize.Format(entry.Bytes)</p>
+            <p><time datetime="@entry.DeletedUtc.ToString("O")">Deleted @entry.DeletedUtc.ToLocalTime().ToString("d MMM yyyy, HH:mm")</time><br /><strong>@entry.Remaining(Clock.GetUtcNow())</strong></p>
+            @if (entry.Error is not null) { <p role="alert">@entry.Error</p> }
+            <div class="trash-card-actions"><button disabled="@(_busy || !entry.CanRestore(Clock.GetUtcNow()) || _missing.Contains(entry.Id))" @onclick="() => RestoreAsync([row])">Restore</button><button class="danger-link" disabled="@_busy" @onclick="() => Confirm([row], false)">Delete permanently</button></div>
+        </div>
+    </article>
+}
+</div>
+@if (Filtered.Count > PageSize)
+{
+    <nav class="trash-pagination" aria-label="Trash pages"><button disabled="@(_page == 0 || _busy)" @onclick="() => _page--">Previous</button><span>Page @(_page + 1) of @PageCount</span><button disabled="@(_page + 1 >= PageCount || _busy)" @onclick="() => _page++">Next</button></nav>
+}
+<InlineDialog Visible="_confirmOpen" VisibleChanged="ConfirmVisibility" Options="ConfirmOptions" CloseLabel="Close delete confirmation"
+              Title="@(_emptyAll ? (_project.Length == 0 ? "Empty Trash for all projects?" : "Empty Trash for this project?") : "Delete media permanently?")">
+    <DialogContent><p>This permanently removes @_pending.Count saved media item@(_pending.Count == 1 ? "" : "s") and their metadata, freeing approximately <strong>@StorageSize.Format(_pending.Sum(r => r.Bytes))</strong>. Deleting a video take also removes its remaining frame archives and refinement data. This cannot be undone.</p>
+        @if (_emptyAll) { <p>@(_project.Length == 0 ? "All projects are included." : "Only the selected project is included.") Media discarded after this confirmation opened is excluded.</p> }
+        <div class="trash-confirm-thumbnails">@foreach (var row in _pending.Take(12)) { <figure>@if (row.ThumbnailUrl is { } thumb) { <img src="@thumb" alt="@row.OwnerName" /> }<figcaption>@row.ProjectName · @row.OwnerName</figcaption></figure> }</div>
+    </DialogContent>
+    <DialogActions><MudButton OnClick="() => _confirmOpen = false">Cancel</MudButton><MudButton Color="Color.Error" Variant="Variant.Filled" OnClick="PurgeConfirmedAsync">Delete permanently</MudButton></DialogActions>
+</InlineDialog>
+@if (_preview is { } preview)
+{
+    <InlineDialog Visible="_previewOpen" VisibleChanged="value => _previewOpen = value" Class="trash-preview" Options="PreviewOptions" Title="@preview.OwnerName" Context="In Trash" CloseLabel="Close Trash preview">
+        <DialogContent>
+            @if (preview.Kind == MediaTrashKind.Image && preview.Image is { } image)
+            {
+                <ImageComparisonViewer Primary="@(new(new(Guid.Empty, image.Id), "Image in Trash"))" PrimaryImage="@(_previewMissing ? null : image)" PrimaryUrl="@Url(preview)" Unavailable="_ => _previewMissing = true" />
+            }
+            else if (preview.Kind == MediaTrashKind.Take) { <video controls playsinline preload="metadata" src="@Url(preview)"></video> }
+            else if (preview.Kind == MediaTrashKind.Voice) { <audio controls preload="metadata" src="@Url(preview)"></audio> }
+            else { <img src="@Url(preview)" alt="@preview.Title" /> }
+            @if (preview.Image?.Source?.Frame is { } frame) { <p>Saved from video frame @(frame.FrameIndex + 1) · @frame.Timestamp.ToString("0.000") s · @frame.Width × @frame.Height · @frame.Fps fps</p><p>Shot @frame.ShotId · take @frame.TakeId</p> }
+            @if (preview.Image?.Source?.Crop is { } crop) { <p>Cropped copy of image @crop.ImageId · source @crop.SourceWidth × @crop.SourceHeight</p><p>@System.Text.Json.JsonSerializer.Serialize(crop.Crop)</p> }
+            @if (preview.Image?.Generation?.Look is { } look) { <p>Submitted look: @look.AssetName · @look.LookName</p><p class="preservation-text">@look.Description @look.PreservationGuidance</p> }
+            @if (preview.Take is { } take) { <ShotAppearanceDetails Appearances="take.Snapshot.Appearances" /><RefinementDetails Take="take" /><VideoLoraDetails Snapshot="take.Snapshot" /> }
+            <p>@preview.ProjectName · @preview.Remaining(Clock.GetUtcNow())</p>
+            <details><summary>Media details</summary><pre class="shot-source">@System.Text.Json.JsonSerializer.Serialize(preview, AtomicJsonFile.Options)</pre></details>
+
+        </DialogContent>
+        <DialogActions><MudButton OnClick="() => _previewOpen = false">Close</MudButton></DialogActions>
+    </InlineDialog>
+}
+
+}
+
+@code {
+    [SupplyParameterFromQuery(Name = "view")] public string? View { get; set; }
+    private bool Archives => View == "archives";
+    private const int PageSize = 24;
+    private MediaTrashLibrary _library = new([], []);
+    private HashSet<Guid> _selected = [], _missing = [];
+    private IReadOnlyList<MediaTrashRow> _pending = [];
+    private MediaTrashRow? _preview;
+    private bool _interactive;
+    private bool _loading, _busy, _confirmOpen, _emptyAll, _previewOpen, _focusRefresh, _previewMissing;
+    private string _project = "", _progress = "";
+    private string? _error, _notice;
+    private int _page;
+    private ElementReference _refreshButton;
+    private DialogOptions ConfirmOptions => new() { MaxWidth = MaxWidth.Small, FullWidth = true, CloseOnEscapeKey = true };
+    private DialogOptions PreviewOptions => new() { MaxWidth = MaxWidth.ExtraLarge, FullWidth = true, CloseOnEscapeKey = true };
+    private IReadOnlyList<MediaTrashRow> Filtered => _library.Items.Where(r => _project.Length == 0 || r.ProjectId.ToString() == _project).ToArray();
+    private IEnumerable<MediaTrashRow> Paged => Filtered.Skip(_page * PageSize).Take(PageSize);
+    private int PageCount => Math.Max(1, (Filtered.Count + PageSize - 1) / PageSize);
+    private IReadOnlyList<MediaTrashRow> SelectedRows => _library.Items.Where(r => _selected.Contains(r.Id)).ToArray();
+    protected override Task OnInitializedAsync() => RefreshAsync();
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender) { _interactive = true; StateHasChanged(); }
+        if (_focusRefresh) { _focusRefresh = false; if (!Archives) await _refreshButton.FocusAsync(); }
+    }
+    private async Task RefreshAsync()
+    {
+        _loading = true;
+        try
+        {
+            _library = await Store.ListAsync();
+            _selected.IntersectWith(_library.Items.Select(r => r.Id));
+            _missing.Clear(); _page = Math.Min(_page, PageCount - 1);
+        }
+        catch (Exception e) when (e is WorkspaceStoreException or ProjectStoreException) { _error = e.Message; }
+        finally { _loading = false; }
+    }
+    private void FilterChanged(ChangeEventArgs args) { _project = args.Value?.ToString() ?? ""; _page = 0; _selected.Clear(); }
+    private void Select(Guid id, bool selected) { if (selected) _selected.Add(id); else _selected.Remove(id); }
+    private void Preview(MediaTrashRow row) { _preview = row; _previewMissing = false; _previewOpen = true; }
+    private static string Url(MediaTrashRow row) => row.Url;
+    private void Confirm(IReadOnlyList<MediaTrashRow> rows, bool all) { _pending = rows.ToArray(); _emptyAll = all; _confirmOpen = true; }
+    private void ConfirmVisibility(bool visible) => _confirmOpen = visible;
+    private Task PurgeConfirmedAsync() { _confirmOpen = false; return MutateAsync(_pending, true); }
+    private Task RestoreAsync(IReadOnlyList<MediaTrashRow> rows) => MutateAsync(rows.ToArray(), false);
+    private async Task MutateAsync(IReadOnlyList<MediaTrashRow> rows, bool purge)
+    {
+        if (_busy) return;
+        _busy = true; _error = null; _progress = purge ? "Deleting media permanently…" : "Restoring media…";
+        try
+        {
+            var result = await Store.ChangeAsync(rows.ToArray(), purge);
+            _selected.ExceptWith(result.Succeeded);
+            _notice = $"{result.Succeeded.Count} media item(s) {(purge ? "deleted permanently" : "restored")}.";
+            if (result.Issues.Count > 0) _error = string.Join(" ", result.Issues.Select(i => i.Message));
+            await RefreshAsync(); _focusRefresh = true;
+        }
+        catch (Exception e) { _error = e.Message; }
+        finally { _busy = false; }
+    }
+}

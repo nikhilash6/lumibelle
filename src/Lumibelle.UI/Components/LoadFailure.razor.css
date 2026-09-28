@@ -1,0 +1,7 @@
+.load-failure { max-width: 42rem; margin: 32px auto; padding: 0 16px; }
+.load-failure h1 { margin-bottom: 12px; }
+.load-failure p { margin: 0 0 12px; }
+.load-failure-message { font-weight: 600; color: var(--lumi-danger); }
+.load-failure-details { margin-top: 20px; color: var(--muted); font-size: var(--lumi-font-size-small); }
+.load-failure-details summary { cursor: pointer; }
+.load-failure-details p { margin: 8px 0 0; overflow-wrap: anywhere; }

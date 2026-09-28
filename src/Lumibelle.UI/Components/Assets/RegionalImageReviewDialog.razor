@@ -1,0 +1,215 @@
+@inject IAiJobStore Jobs
+@inject IAssetStore AssetStore
+@inject IJSRuntime JS
+<InlineDialog Visible="Visible" Options="@(new DialogOptions { MaxWidth = MaxWidth.ExtraLarge, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false })" Class="image-review-dialog media-details-dialog regional-review-dialog" ContentClass="image-review-content" ActionsClass="image-review-actions">
+    <TitleContent><DialogHeader Title="Review regional edits" Context="IMAGE BATCH" CloseLabel="Close details" CloseDisabled="_busy" Close="Close">
+        <div class="region-review-switches image-review-toolbar" role="group" aria-label="Result view">
+            @foreach (var view in new[] { "Original", "Model result", "Combined" }) { <button disabled="@(view == "Combined" && _combined is null)" aria-pressed="@(_view == view ? "true" : "false")" @onclick="() => _view = view">@view</button> }
+            <label><input type="checkbox" @bind="_compare" /> Compare with original</label>
+            @if (_compare) { <label><input type="checkbox" @bind="_sideBySide" /> Side by side</label> }
+        </div>
+    </DialogHeader></TitleContent>
+    <DialogContent>
+        <lumibelle.Components.AI.AiResultAcknowledgement Observed="Session.ObservedJobs" MediaByJob="@(Session.ObservedJobs.ToDictionary(j => j.Id, j => j.Batch!.Candidates.Where(c => Session.CompletedCandidates.Contains(c.Number)).Select(c => c.Id).ToArray()))" />
+        <DialogEscape Pressed="Close" />
+        @if (Session.IsRunning) { <p role="status">@(Session.Progress?.Label ?? "Waiting for the next result…") <button @onclick="() => CancelRequested.InvokeAsync()">Cancel remaining</button></p> }
+        @if (Session.Status is not null) { <p role="status">@Session.Status</p> }
+        @if (Session.Job?.Recovery is AiJobRecovery.RetryOutput or AiJobRecovery.CheckStatus) { <button @onclick="() => RetryOutput.InvokeAsync()">Retry download / check status</button> }
+        @if (_batch is { } batch)
+        {
+            <div class="image-review-layout media-details-layout">
+                <section class="image-review-main">
+                    @if (_selectMatch && batch.Request.Regional is { } capture)
+                    {
+                        <section class="colour-area-editor" aria-label="Choose matching area">
+                            <h3>Choose an unchanged area</h3>
+                            <ImageCropEditor Url="@(_originalUrl!)" Width="capture.Selection.Width" Height="capture.Selection.Height" InitialCrop="_matchDraft"
+                                SelectionLabel="Matching area" MaxZoom="20" Hint="Select background or another area that stayed the same in both images. Hidden pixels and pixels outside the model input are excluded. This only selects a colour reference; it does not crop the result."
+                                CropChanged="c => _matchDraft = c" Disabled="@_busy" />
+                            <button disabled="@_busy" @onclick="CancelMatchArea">Cancel area selection</button>
+                            <button disabled="@_busy" @onclick="UseMatchArea">Use matching area</button>
+                        </section>
+                    }
+                    else if (Current is { } candidate)
+                    {
+                        <ImageComparisonViewer PrimaryUrl="@CurrentUrl" Primary="@Entry(_view)" PrimaryImage="@DisplayImage(_view)"
+                            SecondaryUrl="@(_compare ? _originalUrl : null)" Secondary="@(_compare ? Entry("Original") : null)" SecondaryImage="@(_compare ? DisplayImage("Original") : null)" SideBySide="_sideBySide" />
+                    }
+                    else { <p>No results are ready for review yet.</p> }
+                    <div class="review-image-list" role="group" aria-label="Regional edit results">
+                        @foreach (var item in batch.Candidates)
+                        {
+                            <button class="review-image-row" aria-pressed="@(_candidate == item.Image.CandidateId ? "true" : "false")" @onclick="() => Select(item.Image.CandidateId)">Take @item.Number · @(item.State.Saved ? "Saved to Assets" : item.State.Discarded ? "Discarded" : "Awaiting your review")</button>
+                        }
+                    </div>
+                </section>
+                <aside class="image-review-inspector">
+                    <h3>Restore original pixels</h3>
+                    <p>The result is placed at the captured coordinates. Protected pixels and pixels outside the edit region come from the original.</p>
+                    <fieldset class="colour-controls" disabled="@AdjustmentsLocked">
+                        <legend>Colour match</legend>
+                        <label class="colour-toggle"><input type="checkbox" @bind="MatchOriginal" @bind:after="AdjustmentsChanged" /> Match original colours</label>
+                        @if (MatchOriginal)
+                        {
+                            <label>Strength · @Strength%<input aria-label="Colour match strength" type="range" min="0" max="100" @bind="Strength" @bind:after="AdjustmentsChanged" /></label>
+                            @if (_colourMessage is not null) { <p class="field-hint" role="status">@_colourMessage</p> }
+                        }
+                        <div class="colour-area-actions">
+                            <button aria-label="Choose matching area…" @onclick="ChooseMatchArea">Choose matching area…</button>
+                            @if (_colour.MatchArea is not null) { <button @onclick="UseContext">Use surrounding context</button> }
+                        </div>
+                        <details class="colour-manual"><summary>Manual adjustments</summary>
+                            <label>Brightness · @Brightness<input aria-label="Brightness" type="range" min="-50" max="50" @bind="Brightness" @bind:after="AdjustmentsChanged" /></label>
+                            <label>Warmth · @Warmth<input aria-label="Warmth" type="range" min="-50" max="50" @bind="Warmth" @bind:after="AdjustmentsChanged" /></label>
+                            <label>Tint · @Tint<input aria-label="Tint" type="range" min="-50" max="50" @bind="Tint" @bind:after="AdjustmentsChanged" /></label>
+                        </details>
+                        <button @onclick="ResetColour">Reset colour adjustments</button>
+                        <p class="field-hint">Only replacement pixels change. No new generation is needed.</p>
+                    </fieldset>
+                    <label>Edge blend · @_blend px<input aria-label="Edge blend" type="range" min="0" max="32" @bind="_blend" @bind:after="AdjustmentsChanged" disabled="@AdjustmentsLocked" /></label>
+                    <p class="field-hint">Zero preserves a hard boundary. Blending affects only the editable side.</p>
+                    @if (Current is { } selected) { <p role="status">@(selected.State.Saved ? "Saved as an independent image in Assets." : selected.State.Discarded ? "This result was discarded." : "Awaiting your review · not yet in Assets")</p> }
+                    @if (_combineError is not null) { <p class="field-error" role="alert">@_combineError</p><button @onclick='() => _view = "Model result"'>View model result</button> }
+                    <p class="field-hint">Close to continue later. The original and model result remain saved with this request.</p>
+                </aside>
+            </div>
+        }
+        @if (_error is not null) { <p class="field-error" role="alert">@_error</p> }
+    </DialogContent>
+    <DialogActions>
+        <MediaDetailsActions><Tools>
+        @if (OneMore.HasDelegate) { <MudButton Disabled="@(_busy || OneMoreUnavailable is not null)" title="@OneMoreUnavailable" OnClick="() => OneMore.InvokeAsync()">@OneMoreLabel</MudButton> }
+        <MudButton Disabled="@(_busy || Current is null || Current.State.Saved || Current.State.Discarded)" OnClick="Discard">Discard result</MudButton>
+        </Tools><ChildContent>
+        <MudButton Disabled="@_busy" OnClick="Close" Variant="Variant.Outlined">Close</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" Disabled="@(_busy || _loading || _selectMatch || Current is null || Current.State.Saved || Current.State.Discarded || _combined is null)" OnClick="Save">Save to Assets</MudButton>
+        </ChildContent></MediaDetailsActions>
+    </DialogActions>
+</InlineDialog>
+@code {
+    [Parameter, EditorRequired] public ImageReviewSession Session { get; set; } = null!;
+    [Parameter] public bool Visible { get; set; }
+    [Parameter] public EventCallback Closed { get; set; }
+    [Parameter] public EventCallback<AssetLibrary> Saved { get; set; }
+    [Parameter] public EventCallback OneMore { get; set; }
+    [Parameter] public string OneMoreLabel { get; set; } = "One more take";
+    [Parameter] public string? OneMoreUnavailable { get; set; }
+    [Parameter] public EventCallback CancelRequested { get; set; }
+    [Parameter] public EventCallback RetryOutput { get; set; }
+    private RegionalReviewBatch? _batch;
+    private Guid? _candidate; private int _blend; private bool _busy, _loaded, _wasVisible, _compare, _sideBySide;
+    private string _view = "Combined"; private string? _originalUrl, _resultUrl, _combinedUrl, _error, _combineError;
+    private byte[]? _combined;
+    private int _previewVersion, _resultWidth, _resultHeight;
+    private int _completed = -1; private bool _loading, _reloadAgain;
+    private RegionalColourSettings _colour = new();
+    private bool _selectMatch, _restoreAreaFocus, _editingAdjustments, _adjustmentsAgain; private ImageCropRegion? _matchDraft; private string? _colourMessage;
+    private bool AdjustmentsLocked => _busy || _loading || _selectMatch || Current is null || Current.State.Saved || Current.State.Discarded || Current.State.SaveBlend is not null;
+    private bool MatchOriginal { get => _colour.MatchOriginal; set => _colour = _colour with { MatchOriginal = value }; }
+    private int Strength { get => _colour.Strength; set => _colour = _colour with { Strength = value }; }
+    private int Brightness { get => _colour.Brightness; set => _colour = _colour with { Brightness = value }; }
+    private int Warmth { get => _colour.Warmth; set => _colour = _colour with { Warmth = value }; }
+    private int Tint { get => _colour.Tint; set => _colour = _colour with { Tint = value }; }
+    private RegionalImageReview Review => new(Jobs, AssetStore);
+    private RegionalReviewCandidate? Current => _batch?.Candidates.FirstOrDefault(c => c.Image.CandidateId == _candidate);
+    private string? CurrentUrl => _view == "Original" ? _originalUrl : _view == "Model result" ? _resultUrl : _combinedUrl;
+    protected override async Task OnParametersSetAsync()
+    {
+        if (Visible && (!_loaded || !_wasVisible || _completed != Session.CompletedCandidates.Count))
+        { _completed = Session.CompletedCandidates.Count; await Reload(); }
+        _wasVisible = Visible;
+    }
+    private async Task Reload()
+    {
+        if (_loading || _editingAdjustments) { _reloadAgain = true; return; }
+        _loading = true;
+        try
+        {
+            do
+            {
+                _reloadAgain = false;
+                var batch = await Review.LoadAsync(Session.ProjectId, Session.Id);
+                _batch = batch; _loaded = true; _originalUrl = Data(batch.Request.Regional!.OriginalPng);
+                _candidate ??= batch.Candidates.FirstOrDefault(c => !c.State.Saved && !c.State.Discarded)?.Image.CandidateId ?? batch.Candidates.FirstOrDefault()?.Image.CandidateId;
+                ReadAdjustments();
+                await Preview();
+            } while (_reloadAgain);
+        }
+        catch (Exception e) { _error = e.Message; }
+        finally { _loading = false; }
+    }
+    private void ReadAdjustments()
+    {
+        var state = Current?.State;
+        _blend = state?.SaveBlend ?? state?.DraftBlend ?? 0;
+        _colour = (state?.SaveBlend is not null ? state.SaveColour : state?.DraftColour) ?? new();
+    }
+    private async Task Select(Guid id) { if (_busy || _loading) return; _selectMatch = false; _candidate = id; ReadAdjustments(); _error = null; await Preview(); }
+    private async Task AdjustmentsChanged()
+    {
+        if (Current is null) return;
+        // Input events can already be in flight when the controls become disabled.
+        // Coalesce them into another preview/save instead of losing the user's last change.
+        _adjustmentsAgain = true;
+        if (_editingAdjustments || _busy) return;
+        _busy = _editingAdjustments = true; _error = null; _view = "Combined";
+        try
+        {
+            do
+            {
+                _adjustmentsAgain = false;
+                var id = Current.Image.CandidateId; var blend = _blend; var colour = _colour;
+                await Preview();
+                var state = await Review.SaveDraftAsync(Session.ProjectId, Session.Id, id, blend, colour);
+                _batch = _batch! with { Candidates = _batch.Candidates.Select(c => c.Image.CandidateId == id ? c with { State = state } : c).ToArray() };
+            } while (_adjustmentsAgain);
+        }
+        catch (Exception e) { _error = "Adjustments are still visible, but could not be saved for later: " + e.Message; }
+        finally { _busy = _editingAdjustments = false; if (_reloadAgain) await Reload(); }
+    }
+    private void ChooseMatchArea() { _matchDraft = _colour.MatchArea ?? _batch!.Request.Regional!.Selection.Context; _selectMatch = true; }
+    private void CancelMatchArea() { _selectMatch = false; _restoreAreaFocus = true; }
+    private async Task UseMatchArea() { _colour = _colour with { MatchOriginal = true, MatchArea = _matchDraft }; _selectMatch = false; await AdjustmentsChanged(); _restoreAreaFocus = true; }
+    private async Task UseContext() { _colour = _colour with { MatchOriginal = true, MatchArea = null }; await AdjustmentsChanged(); }
+    private async Task ResetColour() { _colour = new(); await AdjustmentsChanged(); }
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_restoreAreaFocus && !AdjustmentsLocked) { _restoreAreaFocus = false; await JS.InvokeVoidAsync("lumibelleAssets.focusReview", "Choose matching area…"); }
+    }
+    private async Task Preview()
+    {
+        var version = ++_previewVersion;
+        _combined = null; _combinedUrl = null; _combineError = null; _colourMessage = null;
+        if (Current is not { } current || _batch is null) return;
+        _resultUrl = Data(current.Image.Bytes);
+        var info = ImageInspector.Inspect(current.Image.Bytes); _resultWidth = info.Width; _resultHeight = info.Height;
+        try
+        {
+            var combined = await RegionalImageEdits.CompositeAsync(_batch.Request.Regional!, current.Image.Bytes, _blend, _colour);
+            if (version == _previewVersion) { _combined = combined.Png; _combinedUrl = Data(combined.Png); _colourMessage = combined.ColourMessage; }
+        }
+        catch (Exception e) { if (version == _previewVersion) { _combineError = e.Message; _view = "Model result"; } }
+    }
+    private ImageReviewEntry Entry(string view) => new(new(Session.AssetId, view == "Original" ? _batch!.Request.Edit!.SourceImageId : _candidate!.Value), view);
+    private AssetImage? DisplayImage(string view)
+    {
+        if (_batch?.Request.Regional is not { } capture || view == "Combined" && _combined is null) return null;
+        return new() { Id = Entry(view).Reference.ImageId, FileName = "preview.png", ContentType = "image/png",
+            Width = view == "Model result" ? _resultWidth : capture.Selection.Width, Height = view == "Model result" ? _resultHeight : capture.Selection.Height };
+    }
+    private async Task Save()
+    {
+        if (_busy || Current is null) return; _busy = true; _error = null;
+        try { var library = await Review.SaveAsync(Session.ProjectId, Session.Id, Current.Image.CandidateId, _blend, _colour); await Saved.InvokeAsync(library); await Reload(); }
+        catch (Exception e) { _error = e.Message; await Reload(); }
+        finally { _busy = false; }
+    }
+    private async Task Discard()
+    {
+        if (_busy || Current is null) return; _busy = true; _error = null;
+        try { await Review.DiscardAsync(Session.ProjectId, Session.Id, Current.Image.CandidateId); await Reload(); }
+        catch (Exception e) { _error = e.Message; } finally { _busy = false; }
+    }
+    private Task Close() { if (_busy) return Task.CompletedTask; _selectMatch = false; return Closed.InvokeAsync(); }
+    private static string Data(byte[] bytes) => "data:image/png;base64," + Convert.ToBase64String(bytes);
+}

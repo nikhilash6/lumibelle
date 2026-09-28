@@ -1,0 +1,44 @@
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+
+<div class="script-canvas" @ref="_element"></div>
+
+@code {
+    [Parameter] public ScriptSelection? InitialSelection { get; set; }
+    [Parameter] public List<ScriptBlock> InitialBlocks { get; set; } = [];
+    [Parameter] public EventCallback<ScriptEditorState> Changed { get; set; }
+    [Parameter] public EventCallback Save { get; set; }
+    [Parameter] public EventCallback<long> Pending { get; set; }
+    private ElementReference _element;
+    private IJSObjectReference? _module;
+    private DotNetObjectReference<ScriptCanvas>? _reference;
+    public bool Ready => _module is not null;
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        _module = await JS.InvokeAsync<IJSObjectReference>("import", lumibelle.UiAssets.Module("script-editor.js"));
+        _reference = DotNetObjectReference.Create(this);
+        await _module.InvokeVoidAsync("mount", _element, _reference, InitialBlocks, InitialSelection);
+    }
+    [JSInvokable] public Task EditorChanged(ScriptEditorState state) => Changed.InvokeAsync(state);
+    [JSInvokable] public Task EditorDirty(long version) => Pending.InvokeAsync(version);
+    [JSInvokable] public Task SaveFromKeyboard() => Save.InvokeAsync();
+    public async Task<ScriptEditorState?> ReadAsync() => _module is null ? null : await _module.InvokeAsync<ScriptEditorState>("read", _element);
+    public async Task ReplaceAsync(List<ScriptBlock> blocks, bool resetHistory = false)
+    { if (_module is not null) await _module.InvokeVoidAsync("replace", _element, blocks, resetHistory); }
+    public async Task SetEditableAsync(bool value) { if (_module is not null) await _module.InvokeVoidAsync("editable", _element, value); }
+    public async Task AcknowledgeAsync(long version) { if (_module is not null) await _module.InvokeVoidAsync("acknowledge", _element, version); }
+    public async Task CommandAsync(string name, string? value = null)
+    { if (_module is not null) await Changed.InvokeAsync(await _module.InvokeAsync<ScriptEditorState>("command", _element, name, value)); }
+    public async Task JumpAsync(Guid id) { if (_module is not null) await _module.InvokeVoidAsync("jump", _element, id); }
+    public async Task RenameAsync(Guid id) { if (_module is not null) await _module.InvokeVoidAsync("rename", _element, id); }
+    public async Task HighlightAsync(IReadOnlyList<ScriptChangeRange> changes) { if (_module is not null) await _module.InvokeVoidAsync("highlight", _element, changes); }
+    public async Task SplitAsync()
+    { if (_module is not null) await Changed.InvokeAsync(await _module.InvokeAsync<ScriptEditorState>("splitScene", _element)); }
+    public async ValueTask DisposeAsync()
+    {
+        try { if (_module is not null) { await _module.InvokeVoidAsync("destroy", _element); await _module.DisposeAsync(); } }
+        catch (JSDisconnectedException) { }
+        _reference?.Dispose();
+    }
+}

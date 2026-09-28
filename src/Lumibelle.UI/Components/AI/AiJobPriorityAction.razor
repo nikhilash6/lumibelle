@@ -1,0 +1,48 @@
+@using lumibelle.Models
+@using lumibelle.Services.AI
+@using lumibelle.Services.Story
+@inject IServiceProvider Services
+
+@if (AiQueueOrder.IsWaiting(Job))
+{
+    <div class="ai-job-priority-action">
+        @if (Coordinator is not null)
+        {
+            <button type="button" disabled="@_busy" aria-pressed="@(Job.Priority ? "true" : "false")"
+                    title="Change this request's place in its provider queue. Running work is not interrupted."
+                    @onclick="ChangePriority">@(Job.Priority ? "Remove priority" : "Prioritize")</button>
+        }
+        @if (Job.Priority)
+        {
+            <span class="field-hint">Priority · ahead of normal waiting requests on @Job.Backend. Running work, pause and recovery checks still take precedence.</span>
+        }
+        @if (_error is not null) { <p class="field-error" role="alert">@_error</p> }
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public AiJobHeader Job { get; set; } = null!;
+    [Parameter] public EventCallback<Guid> Changed { get; set; }
+    private AiJobCoordinator? Coordinator => Services.GetService(typeof(AiJobCoordinator)) as AiJobCoordinator;
+    private bool _busy;
+    private string? _error;
+    private Guid _target;
+    protected override void OnParametersSet()
+    {
+        if (_target != Job.Id) { _target = Job.Id; _error = null; }
+    }
+    private async Task ChangePriority()
+    {
+        if (_busy || Coordinator is not { } coordinator || !AiQueueOrder.IsWaiting(Job)) return;
+        var id = Job.Id; var priority = !Job.Priority;
+        _busy = true; _error = null;
+        try
+        {
+            await coordinator.SetPriorityAsync(id, priority);
+            if (Job.Id == id) await Changed.InvokeAsync(id);
+        }
+        catch (Exception e) when (e is WorkspaceStoreException or AiGenerationException)
+        { if (Job.Id == id) _error = e.Message; }
+        finally { _busy = false; }
+    }
+}
