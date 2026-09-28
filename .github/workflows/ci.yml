@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        description: Package version, for example 1.2.3
+        required: false
+        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -13,6 +19,10 @@ concurrency:
 
 permissions:
   contents: read
+
+env:
+  # Empty outside releases; the publish scripts then use their development version.
+  LUMIBELLE_VERSION: ${{ inputs.version }}
 
 jobs:
   test:
@@ -42,7 +52,12 @@ jobs:
         run: npm run test:unit
 
       - name: .NET tests
-        run: dotnet test lumibelle.slnx -c Release
+        run: dotnet test lumibelle.slnx -c Release --filter "Category!=Component"
+
+      # bUnit component tests race their own background renders when the runner is busy,
+      # so they run one class at a time after the rest of the suite.
+      - name: .NET component tests
+        run: dotnet test lumibelle.slnx -c Release --no-build --filter "Category=Component" -- xUnit.ParallelizeTestCollections=false
 
       - name: Shared studio browser flows
         env:
@@ -67,19 +82,9 @@ jobs:
 
       - run: dotnet workload install maui-windows --skip-manifest-update
 
-      - name: Publish unsigned MSIX
-        shell: pwsh
-        run: ./build/publish-windows.ps1
-
       - name: Publish self-contained folder
         shell: pwsh
         run: ./build/publish-windows.ps1 -Unpackaged
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: lumibelle-windows-msix-unsigned
-          path: src/Lumibelle.Desktop/bin/Release/**/AppPackages/**/*.msix
-          if-no-files-found: error
 
       - uses: actions/upload-artifact@v7
         with:

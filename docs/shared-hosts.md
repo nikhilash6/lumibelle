@@ -103,6 +103,8 @@ bash build/publish-macos.sh
 
 The Web ZIP contains a framework-dependent, RID-independent application; install the ASP.NET Core Runtime 10 and run `dotnet Lumibelle.Web.dll`. It binds to localhost:5183 by default. Windows builds an unsigned MSIX unless external signing settings are supplied. The pinned Windows App SDK requires `WindowsPackageType=MSIX`. Mac produces an unsigned feasibility package. Neither unsigned artifact is a finished public installer.
 
+Both publish scripts take their version from `LUMIBELLE_VERSION` when it is set. To release, run the **Release** GitHub Actions workflow from `main` with a version such as `1.2.3`. It runs the CI tests and desktop builds at that version, then tags the commit `v1.2.3` and publishes a GitHub release with the self-contained Windows x64 ZIP alongside GitHub's source archives. The MSIX and Mac package stay out of releases until they can be signed with trusted certificates; CI still builds the Mac package to keep that target compiling.
+
 Pass Windows signing settings in an external MSBuild targets file with `-SigningProperties`, or set `LUMIBELLE_SIGNING_TARGETS` on Mac. Keep publisher identities, certificate paths/passwords, signing identities and notarization credentials outside source. The Windows certificate subject must match the manifest publisher, or override the publisher for your release. Signing and notarization follow Microsoft's [Windows packaging](https://learn.microsoft.com/en-us/dotnet/maui/windows/deployment/publish-cli?view=net-maui-10.0) and [Mac distribution](https://learn.microsoft.com/en-us/dotnet/maui/mac-catalyst/deployment/publish-outside-app-store?view=net-maui-10.0) guidance.
 
 ## Validation
@@ -114,6 +116,8 @@ dotnet test lumibelle.slnx -c Release
 $env:LUMIBELLE_BROWSER_CONFIGURATION='Release'
 npx playwright test script-polish.spec.js script-revisions.spec.js script-transport.spec.js unified-shots.spec.js text-assistance.spec.js cut.spec.js shared-host.spec.js
 ```
+
+bUnit component test classes carry `[Trait("Category", "Component")]`. CI runs them in a separate pass with `xUnit.ParallelizeTestCollections=false`, because they race their own background renders on a busy runner, and bUnit waits allow 30 seconds when `CI` is set. Tag new component test classes the same way.
 
 The current shared studio suite uses mocked providers. The broad legacy browser suite also contains expectations from retired workflows (inline model settings, approval, separate Production); sampled failures reproduce on the pre-extraction commit. CI runs the focused suite above; that does not establish that the full legacy suite passes.
 
