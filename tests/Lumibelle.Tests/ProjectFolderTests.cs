@@ -57,6 +57,57 @@ public sealed class ProjectFolderTests : IDisposable
     }
 
     [Fact]
+    public async Task ACompactExportOpensFromItsProjectFolder()
+    {
+        var source = NewLibrary(); var project = await source.Projects.CreateAsync(new("Shared example"), _ct);
+        var id = Guid.NewGuid();
+        var image = new AssetImage { Id = id, FileName = id.ToString("N") + ".png", ContentType = "image/png", Width = 400, Height = 300, CreatedUtc = DateTimeOffset.UtcNow };
+        var asset = new ReferenceAsset { Id = Guid.NewGuid(), Name = "Lantern", Category = AssetCategory.Prop, Images = [image] };
+        await AtomicJsonFile.WriteAsync(Path.Combine(source.Root(project), "assets.json"), new AssetLibrary { ProjectId = project.Id, Assets = [asset] }, _ct);
+        var file = Path.Combine(source.Root(project), "assets", asset.Id.ToString("D"), "images", image.FileName);
+        Directory.CreateDirectory(Path.GetDirectoryName(file)!); await File.WriteAllBytesAsync(file, ProjectPackageTests.Photo(400, 300), _ct);
+        var export = await source.Packages.ExportAsync(project.Id, new(LeaveOutLosslessArchives: true, CompressImages: true, MaxImageDimension: 256), ct: _ct);
+        var folder = Outside("compact");
+        await using (var media = (await source.Packages.OpenExportAsync(project.Id, export.Id, _ct))!) ZipFile.ExtractToDirectory(media.Content, folder);
+        var library = NewLibrary();
+        await library.Folders.OpenAsync(folder, _ct);
+        var assets = new FileAssetStore(library.Files, TimeProvider.System);
+        var opened = Assert.Single(Assert.Single((await assets.LoadAsync(project.Id, _ct)).Assets).Images);
+        Assert.Equal((image.Id.ToString("N") + ".webp", "image/webp", 256, 192), (opened.FileName, opened.ContentType, opened.Width, opened.Height));
+        await using var picture = await assets.OpenImageAsync(project.Id, asset.Id, image.Id, _ct);
+        Assert.Equal("image/webp", picture!.ContentType);
+        Assert.True(File.Exists(file));
+    }
+
+    [Fact]
+    public async Task CompactingAnUnzippedExportRemovesBackupsAndItsManifestOnlyWhenAsked()
+    {
+        var source = NewLibrary(); var project = await source.Projects.CreateAsync(new("Shared example"), _ct);
+        var export = await source.Packages.ExportAsync(project.Id, new(), ct: _ct);
+        var folder = Outside("episode");
+        await using (var media = (await source.Packages.OpenExportAsync(project.Id, export.Id, _ct))!) ZipFile.ExtractToDirectory(media.Content, folder);
+        var library = NewLibrary();
+        await library.Folders.OpenAsync(folder, _ct);
+        var root = Path.Combine(folder, "project");
+        await File.WriteAllTextAsync(Path.Combine(root, "production-before-global-setups.json"), "{}", _ct);
+        var assets = new FileAssetStore(library.Files, TimeProvider.System);
+        var compaction = new ProjectCompaction(library.Files, library.Folders, library.Shots,
+            new FileReferenceVideoStore(library.Files, library.Shots, new ProjectCompactionTests.FrameTools()),
+            new MediaTrashStore(library.Files, assets, assets, assets, library.Shots, TimeProvider.System), new FakeAiSettingsStore(), library.Jobs);
+        var plan = await compaction.InspectAsync(project.Id, _ct);
+        Assert.Equal(["production-before-global-setups.json"], plan.Backups);
+        Assert.Equal(Path.Combine(folder, "manifest.json"), plan.Manifest);
+        await compaction.CompactAsync(plan, new HashSet<CompactionPart> { CompactionPart.Backups }, ct: _ct);
+        Assert.False(File.Exists(Path.Combine(root, "production-before-global-setups.json")));
+        Assert.True(File.Exists(Path.Combine(folder, "manifest.json")));
+        var result = await compaction.CompactAsync(plan, new HashSet<CompactionPart> { CompactionPart.PackageManifest }, ct: _ct);
+        Assert.Empty(result.Issues); Assert.False(File.Exists(Path.Combine(folder, "manifest.json")));
+        // The unzipped folder still opens from its top level without the manifest.
+        await library.Folders.RemoveAsync(project.Id, _ct);
+        Assert.Equal(project.Id, (await library.Folders.OpenAsync(folder, _ct)).Id);
+    }
+
+    [Fact]
     public async Task FoldersThatAreNotNewProjectsAreRefused()
     {
         var library = NewLibrary(); var project = await library.Projects.CreateAsync(new("Only once"), _ct);

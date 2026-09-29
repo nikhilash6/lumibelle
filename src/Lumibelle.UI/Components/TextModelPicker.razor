@@ -7,7 +7,8 @@
 
 <div class="text-model-picker" aria-label="Current AI configuration">
     @if (!HideTrigger) {
-    <button type="button" class="model-chip" @onclick="OpenAsync" disabled="@Disabled" aria-label="Text model options" aria-haspopup="dialog" title="@FullLabel">@ShortLabel <span class="model-source">@SourceLabel</span> ▾</button>
+    <button type="button" class="model-chip" @onclick="OpenAsync" disabled="@Disabled" aria-label="Text model options" aria-haspopup="dialog" title="@FullLabel" aria-describedby="@(Notice is null ? null : _inputId + "-notice")">@ShortLabel <span class="model-source">@SourceLabel</span>@if (Notice is { } issue) { <span class="request-notice-badge" aria-hidden="true" title="@issue">!</span> } ▾</button>
+    @if (Notice is { } notice) { <span id="@(_inputId + "-notice")" class="sr-only">@notice</span> }
     }
     @if (_error is not null && !_open) { <span class="model-notice" role="status">@_error</span> }
 </div>
@@ -56,6 +57,8 @@
     private bool _busy, _open, _disposed, _hasLoadedSettings;
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
     public string DisplayLabel => !_hasLoadedSettings ? "Loading model…" : $"{SourceLabel} · {ShortLabel}";
+    // Why the selected model can't be used. The chip shows it as a (!) badge, as request actions do.
+    public string? Notice => _hasLoadedSettings && !_busy ? _session?.Issue : null;
     private string? _error;
     private readonly string _inputId = $"text-model-{Guid.NewGuid():N}";
     private readonly CancellationTokenSource _lifetime = new();

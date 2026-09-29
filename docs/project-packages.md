@@ -5,7 +5,8 @@ Version 1 (`lumibelle-project`, privacy profile `project-loras-only-v1`).
 ## Export and import
 
 Open **Your projects → Export / import project**. Select a project, choose whether
-**Include referenced images from Trash** is enabled, then choose **Prepare export**.
+**Include referenced images from Trash** is enabled and whether to make a
+[compact package for sharing](#compact-packages-for-sharing), then choose **Prepare export**.
 Preparation reads the saved project. Unsaved editor changes are not included.
 Download the prepared ZIP when ready. Preparing another export does not overwrite
 an earlier package. Temporary packages can be removed explicitly.
@@ -30,7 +31,8 @@ project is then edited in place, and the library only records where it is. **Pro
 settings → Storage** can also move a library project into a folder of your choice, and
 remove a linked folder from the library without touching its files. The same project ID
 can be in a library only once, whether in the library folder or a linked one, so opening
-the export of a project that is still in the library is refused.
+the export of a project that is still in the library is refused. The unzipped folder
+opens even after **Compact project** has removed its stale `manifest.json`.
 
 Opening a folder from another library recreates missing generation presets from the
 settings saved with its shots. Existing presets in the destination are preserved;
@@ -53,7 +55,8 @@ into its compositions. Live global setup IDs are detached. When Shots is first
 opened, its existing setup-initialization flow can register/reuse those exact
 settings. Import itself does not write the destination's global settings library.
 
-Lossless take/reel archives and retained refinement data are included when present.
+Lossless take/reel archives and retained refinement data are included when present,
+unless the export leaves the archives out.
 Exact accepted RefMod PNG inputs and their recipes are included; remote RefMod
 caches, cache-location receipts, thumbnails, loose/unregistered media and temporary
 builds are not. RefMod caches can be built on the execution server when needed.
@@ -66,6 +69,63 @@ request recovery and queue-only non-Script responses need the original queue and
 its captured inputs. New generation uses the imported project after the user checks
 models, selected LoRAs and server setup. LoRA definitions are not automatically
 registered and no model files are downloaded by import.
+
+## Compact packages for sharing
+
+Two export options, both off by default, make a smaller package, for example to
+publish an example project. They change only the exported copy, never the source
+project. The manifest records them: `leftOutLosslessArchives` with
+`leftOutLosslessFiles` and `leftOutLosslessBytes`, and `compressedImages` with
+`imageQuality`, `maxImageDimension`, `recompressedImages` and `resizedImages`. Import
+rejects a manifest whose counts disagree with its options.
+
+**Leave out lossless archives** omits the lossless WebP archives of takes and
+reference reels. Run folders and reel candidates are never in a package, with or
+without this option. Each take records the omission the same way **Storage cleanup →
+Lossless archives** does (`frameArchiveRemoval`, with its size removed from the
+take's total), so take review shows "the lossless archive was removed" and decodes
+paused frames and new stills from the MP4. Reels keep their `frame-archive.json`
+index, because saved keyframes and RefMod recipes use its hash as their source
+identity. A reel whose archive was removed with **Compact project** exports the same
+way even with the option off. Each keyframe chosen from the archive is included as its extracted PNG
+(`reference-videos/<id>/frame-<source>-<index>.png`), taken from the project's
+prepared picture or extracted from the archive during export. Reel details, keyframe
+previews, prompt references, RefMod rebuilding, take playback and Cut all keep
+working. Exporting such a project again works with either setting.
+
+What changes without the archives:
+
+* The keyframe editor offers frames decoded from the reel's MP4 instead of the
+  original lossless frames. Existing lossless keyframes stay, and can be mixed with
+  new MP4 picks, but replacing one means choosing a frame from the video. Frame
+  suggestions are analysed from the MP4.
+* Paused take frames, and images saved from them, come from the MP4.
+* **Copy to another project** refuses a reel whose keyframes came from the left-out
+  archive, until those keyframes are chosen again from the video.
+* Take archive cleanup has nothing to remove.
+
+**Compress images for sharing** re-encodes PNG asset images, including images saved
+from take or reel frames and crops, as lossy WebP at quality 85. JPEG and WebP images
+are re-encoded (as JPEG or lossy WebP) only when they are reduced in size. An image is
+kept as it is when re-encoding would not make it smaller. **Largest image side**
+(3840, 2560 or 1920 px, or keep original size) reduces imported images and generated
+or edited images whose size is not recorded elsewhere. Images keep their size when a
+validator ties it to other details: Codex and Qwen-Image outputs, regional edits,
+crops and the images they were cropped from, video and reel frames, and sources of
+regional selections. The package's `assets.json` gets each image's new file name,
+extension, content type, width and height. The manifest lists the new file's length
+and SHA-256. Import and **Open project folder** validate the result like any other
+package.
+
+Reel keyframe pictures and RefMod inputs stay lossless PNG. Their bytes are part of
+recorded identities (RefMod frame hashes, and a fixed `.png` name served as
+`image/png`), and together they are small. Voice recordings and videos are unchanged.
+
+After import, compressed images work everywhere a PNG did. New generations use the
+compressed pixels. A shot composition's saved input hashes describe the original
+files, but video generation recaptures them, so no review is forced. A saved regional
+selection over a compressed image cannot be reused, because its recorded source hash
+no longer matches; select the area again.
 
 ## Referenced Trash
 
@@ -86,8 +146,8 @@ there is no fallback to some other image or reel. Unreferenced trash images are
 never copied, including their names and metadata.
 
 Referenced trashed recordings, takes and reels are retained as dependencies; unrelated
-ones are excluded. Included images/recordings/takes remain in **Trash** on import,
-with a fresh 30-day recovery period. This prevents a stored package immediately
+ones are excluded. Included images/recordings/takes/reels remain in **Trash** on import,
+with a fresh 30-day recovery period (a reel removed before reels had one keeps none). This prevents a stored package immediately
 losing its included sources to the destination's expiry cleanup. They are **not**
 restored into the active library, and the original project's retention dates never
 change. Restore an included source explicitly before using it for a new generation.
@@ -124,7 +184,9 @@ may still need normal configuration/reference review.
 **Not an anonymizer:** scripts, prompts, instructions and media are retained as
 content. Original image/audio/video bytes can contain EXIF, comments, ComfyUI PNG
 workflows or other third-party metadata. These are not scrubbed or re-encoded; doing
-so would also change authoritative source bytes and recorded hashes. Inspect that
+so would also change authoritative source bytes and recorded hashes. The exception is
+an image re-encoded by **Compress images for sharing**, which drops EXIF, XMP and PNG
+text chunks. Inspect that
 content before sharing a package that needs broader anonymization. The unused-LoRA
 filter covers structured application metadata and supported refinement headers,
 not arbitrary text embedded in unrelated binary formats.
@@ -185,3 +247,9 @@ voice excerpts, Script history, effective generation settings and RefMod rebuild
 Confirm unreferenced Trash was excluded, included Trash did not become active,
 source files did not change, and import did not create a remote request. Test a
 cancelled upload, a checksum failure and a duplicate-project import as well.
+
+For a compact package, export the same project with both sharing options, import it
+into another library and also open the unzipped folder. Confirm the source files did
+not change. Then check take playback and paused frames, reel details and keyframe
+previews, adding a keyframe from the video, RefMod rebuilding, asset images and their
+crops, and Cut playback.
