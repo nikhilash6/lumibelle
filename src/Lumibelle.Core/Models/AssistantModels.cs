@@ -121,9 +121,36 @@ public sealed record ComfyTextModelBenchmark(
     int? GeneratedTokens,
     double? TokensPerSecond,
     bool CacheClearConfirmed,
-    bool CustomPrompt);
+    bool CustomPrompt)
+{
+    // Approximate prompt tokens of a standard benchmark; null for advanced tests and benchmarks before context was added.
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public int? ContextTokens { get; init; }
+    // Capacity measurements from follow-up runs of the same prompt (see ComfyTextCapacity). Null when not measured.
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public long? BytesPerReplyToken { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public long? BytesPerPromptToken { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public int? CapacityContextTokens { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public long? CapacityPeakVramUsedBytes { get; init; }
+    // The smallest measured prompt that did not fit: it ran out of GPU memory, or with dynamic VRAM loading it streamed and slowed.
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public int? OutOfMemoryContextTokens { get; init; }
+}
 public sealed record ComfyTextModelVerification(string ComfyUrl, string ComfyVersion, string Model, DateTimeOffset VerifiedUtc,
-    List<ComfyTextModelBenchmark>? Benchmarks = null);
+    List<ComfyTextModelBenchmark>? Benchmarks = null)
+{
+    // Null when the test predates capability probes or could not run them (for example after recovery).
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public ComfyTextModelCapabilities? Capabilities { get; init; }
+}
+/// <summary>
+/// Observed by the model test: each capability is claimed only when the model repeated a code it could
+/// have received solely through that channel, so a tokenizer that silently drops the input fails.
+/// </summary>
+public sealed record ComfyTextModelCapabilities(bool SystemPrompt, ComfyVisionInput Vision);
 public sealed record ComfyTextModelTestRequest(string Prompt, int MaxOutputTokens = 256);
 public sealed record AiModel(string Id, string Name, AiModelVerificationState Verification = AiModelVerificationState.NotApplicable, bool SupportsImages = false, IReadOnlyList<string>? ReasoningEfforts = null, string? DefaultEffort = null, AiModelCatalogInfo? Catalog = null);
 public sealed record AiModelCatalogInfo(string? Description = null, long? ContextLength = null, long? MaxOutputTokens = null,

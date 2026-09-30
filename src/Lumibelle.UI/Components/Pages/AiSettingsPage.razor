@@ -231,6 +231,21 @@ else
                                             }
                                         </dl>
                                         @if (testStatus is not null) { <p class="field-hint">@testStatus.Detail</p> }
+                                        @if (model.Backend == AiBackend.ComfyUI)
+                                        {
+                                            var needsTest = NeedsComfyTest(model);
+                                            <div class="text-model-test @(needsTest ? "needs-test" : "")">
+                                                <div class="text-model-test-actions">
+                                                    <MudButton OnClick="() => OpenModelAsync(model, startTest: true)" Disabled="@Busy" Variant="@(needsTest ? Variant.Filled : Variant.Outlined)" Color="@(needsTest ? Color.Primary : Color.Default)" Size="Size.Small">@(TextModelPolicy.Verification(model, _settings) is null ? "Test model" : "Test again")</MudButton>
+                                                    <MudButton OnClick="() => OpenModelAsync(model, advanced: true)" Disabled="@Busy" Size="Size.Small">Advanced test</MudButton>
+                                                    <MudButton OnClick="() => OpenModelAsync(model)" Disabled="@Busy" Size="Size.Small">Details</MudButton>
+                                                </div>
+                                                @if (needsTest) { <p class="field-hint">Required before starring or selecting this model. The test uses a ~8k-token context with this model's reply-token setting and detects system-prompt and image support.</p> }
+                                                else if (Benchmark(model) is { } measured && ComfyModelDialog.BenchmarkIsStale(measured, ComfyTextSettings.Resolve(model, _settings).MaxOutputTokens))
+                                                { <p class="field-hint">Speed and VRAM were measured with @ComfyModelDialog.BenchmarkKind(measured, 0). Test again to measure the current reply-token setting.</p> }
+                                            </div>
+                                        }
+                                        else if (model.Backend == AiBackend.OpenRouter) { <div class="text-model-test"><MudButton OnClick="() => OpenModelAsync(model)" Disabled="@Busy" Variant="Variant.Outlined" Size="Size.Small">Details &amp; test</MudButton></div> }
                                         <form class="model-alias-form" @onsubmit="() => SaveAliasAsync(model)" @onsubmit:preventDefault>
                                             <label for="@(domId + "-alias")">Alias</label><input id="@(domId + "-alias")" maxlength="120" @bind="_aliasDrafts[key]" @bind:event="oninput" disabled="@Busy" placeholder="Use the original name" />
                                             <p class="field-hint">Shown in settings and studio pickers. Clear to restore the original name.</p>
@@ -244,19 +259,18 @@ else
                                                 <div class="text-generation-fields">
                                                     <label for="@(domId + "-tokens")">Maximum reply tokens<input id="@(domId + "-tokens")" type="number" min="1" max="32768" @bind="draft.Tokens" disabled="@Busy" /></label>
                                                     <label for="@(domId + "-temperature")">Model temperature<input id="@(domId + "-temperature")" type="number" min="0.01" max="2" step="0.01" @bind="draft.Temperature" disabled="@Busy" /></label>
-                                                    <label for="@(domId + "-vision")">Image input (VL compatibility)<select id="@(domId + "-vision")" @bind="draft.VisionInput" disabled="@Busy">
-                                                        <option value="@ComfyVisionInput.Disabled">Disabled — text only</option>
-                                                        <option value="@ComfyVisionInput.SingleImage">Single image</option>
-                                                        <option value="@ComfyVisionInput.ImageBatch">Image batch — multiple references</option>
+                                                    <label for="@(domId + "-image-side")">Image size for multiple references<select id="@(domId + "-image-side")" @bind="draft.ImageSide" disabled="@Busy">
+                                                        @foreach (var side in ComfyTextSettings.BatchImageSides) { <option value="@side">@ImageSideLabel(model, side)</option> }
                                                     </select></label>
                                                 </div>
+                                                <label class="check-row"><input type="checkbox" @bind="draft.RaiseReplyLimit" disabled="@Busy" />Raise the reply limit when the prompt leaves room in GPU memory (up to @ComfyTextCapacity.RaisedReplyCap.ToString("N0") tokens)</label>
+                                                @if (CapacityText(model, draft) is { } capacity) { <p class="field-hint comfy-capacity" data-testid="comfy-capacity">@capacity</p> }
+                                                else { <p class="field-hint comfy-capacity">Test the model to estimate how large a request stays fast on this machine.</p> }
                                                 <p class="field-hint">@(_settings.ComfyTextModels.ContainsKey(key) ? "Saved for this model and ComfyUI server." : "Currently using ComfyUI defaults.") Asset extraction uses temperature 0.2; text thinking is disabled.</p>
-                                                <p class="field-hint">Enable image input only for a checkpoint with vision weights supported by ComfyUI's native CLIPLoader and TextGenerate. A text benchmark does not verify vision. Image batch additionally requires a tokenizer that consumes every batch image; some older models/ComfyUI versions read only the first.</p>
-                                                <p class="field-hint">Save, then refresh the studio's model picker. Single-image descriptions keep the captured image; batches preserve aspect ratio and use padding on canvases up to 1024 pixels per side. Use ComfyUI defaults also disables image input.</p>
+                                                <p class="field-hint comfy-capabilities" data-testid="comfy-capabilities">@ComfyCapabilityText(model)</p>
                                                 <div class="text-generation-actions"><MudButton ButtonType="ButtonType.Submit" Disabled="@Busy" Variant="Variant.Outlined" Size="Size.Small">Save model settings</MudButton><MudButton OnClick="() => CancelTextDraft(model)" Disabled="@Busy" Size="Size.Small">Cancel model settings</MudButton><MudButton OnClick="() => SaveTextDraftAsync(model, true)" Disabled="@(Busy || !_settings.ComfyTextModels.ContainsKey(key))" Size="Size.Small">Use ComfyUI defaults</MudButton></div>
                                             </form>
                                         }
-                                        @if (model.Backend is AiBackend.ComfyUI or AiBackend.OpenRouter) { <div class="text-model-actions"><MudButton OnClick="() => OpenModelAsync(model)" Disabled="@Busy" Size="Size.Small">Details &amp; test</MudButton></div> }
                                         @if (model.Backend == AiBackend.OpenRouter && _settings.OpenRouterTextModelBenchmarks.Where(b => b.Model == model.Model).OrderBy(b => b.CustomPrompt).ThenByDescending(b => b.MeasuredUtc).FirstOrDefault() is { } hostedBenchmark)
                                         { <OpenRouterBenchmarkDetails Benchmark="hostedBenchmark" /> }
                                         @if (info?.Description is { Length: > 0 } description) { <p class="text-model-description">@description</p> }

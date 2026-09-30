@@ -158,15 +158,18 @@ public sealed partial class AiTests
         Assert.Equal(model, verification.Model);
         Assert.Equal("0.34.0", verification.ComfyVersion);
         var benchmark = Assert.Single(verification.Benchmarks!);
-        Assert.Equal(256, benchmark.TokenLimit);
+        Assert.Equal(2048, benchmark.TokenLimit);
+        Assert.Equal(ComfyTextBenchmark.ContextTokens, benchmark.ContextTokens);
         Assert.False(benchmark.CustomPrompt);
         Assert.True(benchmark.CacheClearConfirmed);
-        using var submitted = JsonDocument.Parse(handler.Requests.Single(request => request.Path == "/prompt").Body);
+        // The benchmark comes first; a second run with the same prompt measures memory per token.
+        using var submitted = JsonDocument.Parse(handler.Requests.First(request => request.Path == "/prompt").Body);
         var workflow = submitted.RootElement.GetProperty("prompt");
         Assert.Equal(model, workflow.GetProperty("1").GetProperty("inputs").GetProperty("clip_name").GetString());
-        Assert.Equal(256, workflow.GetProperty("2").GetProperty("inputs").GetProperty("max_length").GetInt32());
+        Assert.Equal(2048, workflow.GetProperty("2").GetProperty("inputs").GetProperty("max_length").GetInt32());
         Assert.False(workflow.GetProperty("2").GetProperty("inputs").GetProperty("thinking").GetBoolean());
-        Assert.Equal(AiProviderRegistry.StandardBenchmarkPrompt, workflow.GetProperty("2").GetProperty("inputs").GetProperty("prompt").GetString());
+        // The benchmark reserves a script-sized context so peak VRAM reflects real requests.
+        Assert.Equal(ComfyTextBenchmark.Prompt(AiProviderRegistry.StandardBenchmarkPrompt), workflow.GetProperty("2").GetProperty("inputs").GetProperty("prompt").GetString());
         Assert.True(Guid.TryParse(submitted.RootElement.GetProperty("client_id").GetString(), out _));
         var free = handler.Requests.Single(request => request.Path == "/free");
         using var freeBody = JsonDocument.Parse(free.Body);
@@ -279,8 +282,8 @@ public sealed partial class AiTests
         Assert.Equal(9L << 30, benchmark.PeakVramUsedBytes);
         Assert.Equal(8L << 30, benchmark.PeakTorchAllocatedBytes);
         Assert.True(benchmark.CacheClearConfirmed);
-        using var workflow = JsonDocument.Parse(JsonSerializer.Serialize(monitor.Workflow));
-        Assert.Equal(256, workflow.RootElement.GetProperty("prompt").GetProperty("2").GetProperty("inputs").GetProperty("max_length").GetInt32());
+        using var workflow = JsonDocument.Parse(JsonSerializer.Serialize(monitor.Workflows[0]));
+        Assert.Equal(2048, workflow.RootElement.GetProperty("prompt").GetProperty("2").GetProperty("inputs").GetProperty("max_length").GetInt32());
     }
 
     [Fact]
@@ -470,13 +473,14 @@ public sealed partial class AiTests
 
 internal sealed class BenchmarkComfyMonitor : IComfyExecutionMonitor
 {
-    public object? Workflow { get; private set; }
+    public object? Workflow => Workflows.LastOrDefault();
+    public List<object> Workflows { get; } = [];
 
     public async IAsyncEnumerable<ComfyExecutionUpdate> ExecuteAsync(HttpClient http, Func<string, object> workflowFactory,
         ComfyExecutionOptions options, [EnumeratorCancellation] CancellationToken operationToken,
         CancellationToken callerToken)
     {
-        Workflow = workflowFactory("benchmark-client");
+        Workflows.Add(workflowFactory("benchmark-client"));
         await Task.Yield();
         yield return new(new(GenerationPhase.Generating, "Generating text", 0, 256, "tokens", TimeSpan.FromSeconds(2)));
         yield return new(new(GenerationPhase.Generating, "Generating text", 128, 256, "tokens", TimeSpan.FromSeconds(14)));

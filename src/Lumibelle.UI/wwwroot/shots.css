@@ -286,6 +286,12 @@
 @media(max-width:649px) { .shot-video-reference-dialog { margin:8px !important; width:calc(100% - 16px) !important; max-height:calc(100dvh - 16px) !important; } .shot-video-reference-dialog .mud-dialog-content { padding:8px 12px; } }
 .exact-text .tiptap { font-family: ui-monospace, Consolas, monospace; font-size: var(--lumi-font-size-compact); }
 .prompt-validation { padding: .7rem; background: var(--lumi-warning-surface); border-left: 3px solid var(--lumi-warning-border); margin-top: .6rem; }
+.composition-size { margin: .6rem 0; }
+.composition-size-steps { list-style: none; margin: .5rem 0 0; padding: 0; display: grid; gap: .4rem; }
+.composition-size-steps li { display: flex; flex-wrap: wrap; align-items: baseline; gap: .15rem .6rem; padding: .35rem .6rem; border-left: 3px solid var(--lumi-border); }
+.composition-size-steps li .field-hint { flex-basis: 100%; margin: 0; }
+.composition-size-step { font-weight: 600; }
+.composition-size-steps li.atlimit, .composition-size-steps li.toolarge { border-left-color: var(--lumi-warning-border); background: var(--lumi-warning-surface); }
 .ai-options { margin: .6rem 0; }
 .unified-take-gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr)); gap: 1rem; padding: .7rem 0; }
 .unified-take-card { border: 1px solid var(--lumi-border); border-radius: var(--lumi-radius-surface); overflow: hidden; background: var(--lumi-surface); }
@@ -397,3 +403,8 @@
 }
 .take-selection-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: .65rem; margin-bottom: .85rem; }
 .take-selection-toolbar span { color: var(--muted); font-size: .875rem; }
+
+.recent-instructions { display: grid; gap: .3rem; margin: -.2rem 0 .6rem; }
+.recent-instruction { text-align: left; font: inherit; font-size: var(--lumi-font-size-small); padding: .3rem .55rem; border: 1px solid var(--lumi-border); border-radius: 6px;
+    background: transparent; color: inherit; cursor: pointer; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.recent-instruction:hover:not(:disabled) { border-color: var(--lumi-accent, currentColor); }

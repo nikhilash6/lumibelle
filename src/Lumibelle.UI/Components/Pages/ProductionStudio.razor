@@ -35,6 +35,15 @@ else
 <ChildContent>        <fieldset disabled="@PlanningComposerLocked"><legend>Script scenes</legend>@foreach (var scene in PlanningScenes) { <label class="check-row"><input type="checkbox" checked="@_sceneSelection.Contains(scene.Id)" @onchange="e => ChooseScene(scene.Id, e.Value is true)" />@scene.Title</label> }</fieldset>
         <label>Maximum shot length (seconds)<input type="number" min="1" max="15" step="0.1" @bind="_maximum" disabled="@PlanningComposerLocked" /></label><p class="field-hint">@MaximumLabel · applies to this breakdown only.</p>
         <label>Directing instructions (optional)<textarea rows="3" @bind="_instructions" @bind:event="oninput" disabled="@PlanningComposerLocked"></textarea></label>
+        @if (_recentInstructions.Count > 0)
+        {
+            <div class="recent-instructions" role="group" aria-label="Recent directing instructions"><span class="field-hint">Recent instructions</span>
+                @foreach (var recent in _recentInstructions)
+                {
+                    <button type="button" class="recent-instruction" title="@recent" disabled="@PlanningComposerLocked" @onclick="() => UseRecentInstructions(recent)">@recent</button>
+                }
+            </div>
+        }
 @if (_planningError is not null) { <p role="alert">@_planningError</p> }</ChildContent>
 <Actions><MudButton Class="ai-assist-action" OnClick="Draft" Disabled="@(_planning || _planningSubmitting || _pendingPlanning is not null || _model?.Ready != true || _sceneSelection.Count == 0)" Variant="Variant.Filled" Color="Color.Primary"><AiAssistIcon />Draft shots</MudButton>@if (_pendingPlanning is not null) { <button @onclick="RetryPlanningEnqueueAsync">Retry saving request</button> }</Actions>
 </TextAssistance><div class="shots-library-options" @ref="_bulkDeleteButton"><MudMenu Label="Bulk operations" Size="Size.Small" Color="Color.Primary" Dense="true" AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight"><MudMenuItem role="menuitem" OnClick="OpenBulkGenerate">Generate takes…</MudMenuItem><MudMenuItem role="menuitem" OnClick="() => OpenShotDeletion()">Delete shots…</MudMenuItem></MudMenu></div></div><input type="search" aria-label="Search shots" placeholder="Search shots…" @bind="_filter" @bind:event="oninput" />
@@ -337,11 +346,36 @@ else
                     @if (_compositionResult is null && !string.IsNullOrEmpty(_compositionRaw)) { <details><summary>Inspect AI response</summary><pre class="shot-source">@_compositionRaw</pre></details> }
                     @if (CompositionPromptWarning is { } warning) { <p class="field-hint" role="status">Review note: @warning You can keep this text; this does not block saving or generation.</p> }
                     <PromptEditor @ref="_promptEditor" @key="composition.ShotId" HistoryKey="@($"{_promptHistoryScope}:{composition.ShotId}")" Text="@composition.Prompt" TextChanged="text => PromptChanged(composition.ShotId, text)" PictureClicked="PreviewPicture" VideoClicked="PreviewVideo"><ToolbarActions>
-                    <div @ref="_compositionReviewOrigin"><TextAssistance Request="CompositionPresentation" Preparing="@(_compositionBusy && _compositionDialogJob is null)" HasError="@(_compositionEnqueue is not null)" ReviewRequested="InspectComposition" CancelRequested="CancelComposition" @ref="_compositionAssist" @key="(composition.ShotId, nameof(TextAssistance))" ProjectId="Id" Studio="TextAssistantStudio.Production" Title="Prompt assistance" SelectionChanged="value => _compositionModel = value" ModelLocked="@(_compositionBusy || CompositionJob?.LocksTarget == true)">
+                    <div @ref="_compositionReviewOrigin"><TextAssistance Request="CompositionPresentation" Preparing="@(_compositionBusy && _compositionDialogJob is null)" HasError="@(_compositionEnqueue is not null)" ReviewRequested="InspectComposition" CancelRequested="CancelComposition" @ref="_compositionAssist" @key="(composition.ShotId, nameof(TextAssistance))" ProjectId="Id" Studio="TextAssistantStudio.Production" Title="Prompt assistance" SelectionChanged="CompositionModelChanged" ModelLocked="@(_compositionBusy || CompositionJob?.LocksTarget == true)">
                         <ExtraActions><button disabled="@(!CanClearPrompt)" title="Clear the prompt. References, settings, and Direction for AI stay." @onclick="ClearPrompt">Clear prompt</button></ExtraActions>
                         <ChildContent><p class="field-hint">@shot.Title</p>                    <label>Direction for AI<textarea rows="2" maxlength="20000" placeholder="For example: stay closer on her face, then reveal the monitor." @bind:get="composition.DirectingNotes" @bind:set="value => EditComposition(c => c.DirectingNotes = value ?? string.Empty)" @bind:event="oninput"></textarea></label>
-<label class="check-row"><input type="checkbox" @bind="_inspectCompositionImages" disabled="@(_compositionBusy || CompositionJob?.LocksTarget == true || _compositionEnqueue is not null)" />Send reference images to the prompt-writing model</label>
-<p class="field-hint">Saved visual descriptions are included when available. Turn image sending off to use a text-only model; all visual references then need saved descriptions. This affects only prompt assistance, not the references sent to video generation.</p>
+<label class="check-row"><input type="checkbox" @bind="_inspectCompositionImages" @bind:after="RefreshCompositionSize" disabled="@(_compositionBusy || CompositionJob?.LocksTarget == true || _compositionEnqueue is not null)" />Send reference images to the prompt-writing model</label>
+<label class="check-row"><input type="checkbox" @bind="_fullCompositionContext" @bind:after="RefreshCompositionSize" disabled="@(_compositionBusy || CompositionJob?.LocksTarget == true || _compositionEnqueue is not null)" />Include scene text and neighbouring shots</label>
+@if (_compositionModel?.Model.Backend == AiBackend.ComfyUI)
+{
+    <div class="composition-size" role="status">
+        <MudButton Size="Size.Small" Variant="Variant.Outlined" Disabled="@(_compositionSizeBusy || _compositionBusy)" OnClick="EstimateCompositionSize">@(_compositionSizeBusy ? "Estimating…" : _compositionStages is null ? "Estimate prompt size" : "Update estimate")</MudButton>
+        @if (_compositionSizeError is { } sizeError) { <p class="field-hint">@sizeError</p> }
+        @if (_compositionStages is { Count: > 0 } stages)
+        {
+            <ul class="composition-size-steps">
+                @foreach (var stage in stages)
+                {
+                    <li class="@stage.Fit.ToString().ToLowerInvariant()">
+                        <span class="composition-size-step">@(stage.Step ?? "Prompt")</span>
+                        <span>@stage.Size.PromptTokens.ToString("N0") tokens@(stage.Capacity is { } limit ? $" of about {limit:N0}" : "")</span>
+                        <strong>@FitLabel(stage.Fit)</strong>
+                        <span class="field-hint">@ComfyTextCapacity.Describe(stage.Size) · up to @stage.Size.ReplyTokens.ToString("N0") reply tokens</span>
+                    </li>
+                }
+            </ul>
+            @if (_compositionBriefReused) { <p class="field-hint">The visual brief is reused, so the images are not inspected again.</p> }
+            @if (stages.Any(stage => stage.TooLarge)) { <p class="field-hint">Too large for @_compositionSizeModel in GPU memory. Leave out the scene text, send fewer references, lower the image size in AI settings, or choose a smaller model.</p> }
+            else if (stages.All(stage => stage.Fit == ComfyTextFit.Unknown)) { <p class="field-hint">Test @_compositionSizeModel in AI settings to see how large a prompt fits in GPU memory.</p> }
+        }
+    </div>
+}
+<p class="field-hint">Turn image sending off to use a text-only model; every reference then needs a saved visual description. This affects only prompt assistance, not the references sent to video generation.</p>
 @if (CompositionDescriptionIssue is { } descriptionIssue) { <p role="status">@descriptionIssue</p> }
 @if (_inspectCompositionImages && (ResolvedReferences.For(shot).Pictures.Count > 0 || ReelRefMods.Uses(shot)) && _compositionModel is { SupportsImages: false }) { <p role="status">Choose a vision model, or turn off image sending and use saved descriptions.</p> }@if (_compositionError is not null) { <p role="alert">@_compositionError</p> }</ChildContent>
                         <Actions><MudButton Class="ai-assist-action" @ref="_composeButton" OnClick="ComposePrompt" Disabled="@(!CanCompose)" Variant="Variant.Filled" Color="Color.Primary"><AiAssistIcon />@(string.IsNullOrWhiteSpace(composition.Prompt) ? "Compose prompt" : "Revise with AI")</MudButton>@if (_compositionEnqueue is not null) { <button @onclick="RetryCompositionEnqueue">Retry saved request</button> }</Actions>

@@ -59,7 +59,8 @@ public sealed class FileAiSettingsStore(ApplicationPaths paths, ISecretProtector
                     var newest = group.MaxBy(item => item.VerifiedUtc)!;
                     var benchmarks = group.SelectMany(item => item.Benchmarks ?? [])
                         .OrderByDescending(item => item.MeasuredUtc).Take(5).ToList();
-                    return newest with { Benchmarks = benchmarks };
+                    return newest with { Benchmarks = benchmarks, Capabilities = newest.Capabilities ??
+                        group.Where(item => item.Capabilities is not null).MaxBy(item => item.VerifiedUtc)?.Capabilities };
                 })
                 .OrderByDescending(item => item.VerifiedUtc).ToList() };
         await AtomicJsonFile.WriteAsync(_path, new StoredSettings(1, saved with { HasOpenRouterKey = false }, secret), cancellationToken);
@@ -133,7 +134,8 @@ public sealed class FileAiSettingsStore(ApplicationPaths paths, ISecretProtector
         if (settings.ComfyTextModelVerifications.Any(item => item is null ||
             string.IsNullOrWhiteSpace(item.ComfyVersion) || string.IsNullOrWhiteSpace(item.Model) || item.VerifiedUtc == default ||
             !Uri.TryCreate(item.ComfyUrl, UriKind.Absolute, out var verifiedUri) || verifiedUri.Scheme is not ("http" or "https") ||
-            verifiedUri.UserInfo.Length > 0 || verifiedUri.Query.Length > 0 || verifiedUri.Fragment.Length > 0))
+            verifiedUri.UserInfo.Length > 0 || verifiedUri.Query.Length > 0 || verifiedUri.Fragment.Length > 0 ||
+            item.Capabilities is { } capabilities && !Enum.IsDefined(capabilities.Vision)))
             throw new WorkspaceStoreException("A saved ComfyUI text-model verification record is invalid. Refresh and test the model again.");
 
         if (settings.ComfyTextModelVerifications.SelectMany(item => item.Benchmarks ?? []).Any(IsInvalidBenchmark))
@@ -143,6 +145,8 @@ public sealed class FileAiSettingsStore(ApplicationPaths paths, ISecretProtector
     private static bool IsInvalidBenchmark(ComfyTextModelBenchmark? benchmark)
     {
         if (benchmark is null || benchmark.MeasuredUtc == default || benchmark.TokenLimit is < 1 or > AiModelTestJobHandler.ComfyAdvancedMaxTokens ||
+            benchmark.BytesPerReplyToken is <= 0 || benchmark.BytesPerPromptToken is <= 0 || benchmark.ContextTokens is <= 0 ||
+            benchmark.CapacityContextTokens is <= 0 || benchmark.CapacityPeakVramUsedBytes is < 0 || benchmark.OutOfMemoryContextTokens is <= 0 ||
             benchmark.GeneratedTokens is < 0 || benchmark.TokensPerSecond is { } rate && (!double.IsFinite(rate) || rate <= 0))
             return true;
 

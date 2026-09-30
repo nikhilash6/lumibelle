@@ -11,7 +11,8 @@ namespace lumibelle.Services.AI;
 
 public sealed partial class AiTextJobCapture(IAiSettingsStore settings, IProjectStore projects, IAssetStore assets,
     IPromptEnhancer enhancer, IGuidanceAssistant guidance, ICodexClient? codex = null,
-    IProductionStore? production = null, IShotStore? shots = null, IScriptStore? scripts = null, IReferenceVideoStore? referenceVideos = null, ReelRefModStore? refmods = null, IProjectDubbingStore? dubbing = null)
+    IProductionStore? production = null, IShotStore? shots = null, IScriptStore? scripts = null, IReferenceVideoStore? referenceVideos = null, ReelRefModStore? refmods = null, IProjectDubbingStore? dubbing = null,
+    VisualBriefCache? briefs = null)
 {
     public static AiJobSubmission Reissue(AiJobHeader job, AiTextJobRequest captured, Guid tab)
     {
@@ -22,7 +23,7 @@ public sealed partial class AiTextJobCapture(IAiSettingsStore settings, IProject
     }
     private static T Copy<T>(T value) => JsonSerializer.Deserialize<T>(JsonSerializer.SerializeToUtf8Bytes(value, AtomicJsonFile.Options), AtomicJsonFile.Options)!;
     public async Task<AiJobSubmission> ComposeAsync(Guid id, Guid tab, Guid projectId, Guid compositionId, long version,
-        TextModelReference model, bool followsDefault, CancellationToken ct = default, bool inspectReferenceImages = true)
+        TextModelReference model, bool followsDefault, CancellationToken ct = default, bool inspectReferenceImages = true, bool reducedScriptContext = false)
     {
         var document = await (production ?? throw new WorkspaceStoreException("Production storage is unavailable.")).LoadAsync(projectId, ct);
         var c = document.Compositions.SingleOrDefault(c => c.Id == compositionId && !c.Archived) ?? throw new WorkspaceStoreException("Choose an active composition.");
@@ -64,20 +65,34 @@ public sealed partial class AiTextJobCapture(IAiSettingsStore settings, IProject
         var nearbyShots = new List<string>();
         var previousShot = source.Shots.Take(Math.Max(0, index)).Where(s => s.SceneId == shot.SceneId && s.Id != shot.Id).LastOrDefault();
         var nextShot = source.Shots.Skip(index + 1).FirstOrDefault(s => s.SceneId == shot.SceneId && s.Id != shot.Id);
-        if (previousShot is not null) nearbyShots.Add(NearbyShotSummary(previousShot, "Previous"));
-        if (nextShot is not null) nearbyShots.Add(NearbyShotSummary(nextShot, "Next"));
+        // Reduced context keeps the shot itself but leaves out the scene text and neighbouring shots to shorten the prompt.
+        if (previousShot is not null && !reducedScriptContext) nearbyShots.Add(NearbyShotSummary(previousShot, "Previous"));
+        if (nextShot is not null && !reducedScriptContext) nearbyShots.Add(NearbyShotSummary(nextShot, "Next"));
         var request = new PromptCompositionRequest(projectId, c.Id, c.Version, ProductionPolicy.ContextFingerprint(c, library, source, project), c.SourceFingerprint,
-            effective, ScriptStructure.Markdown(approved.Blocks.Skip(scene.Start).Take(scene.Count)),
+            effective, reducedScriptContext ? "" : ScriptStructure.Markdown(approved.Blocks.Skip(scene.Start).Take(scene.Count)),
             nearbyShots.ToArray(),
             ShotReferences.Resolve(effective, library, source), [], images.Select(i => i.Identity).ToArray(),
             c.DirectingNotes, c.Prompt, c.RevisionNotes, model, followsDefault)
         {
             InspectReferenceImages = inspectReferenceImages ? null : false,
-            VisualDescriptions = descriptions.Any(d => !string.IsNullOrWhiteSpace(d.Text)) || !inspectReferenceImages ? descriptions : null
+            ReducedScriptContext = reducedScriptContext,
+            // Saved descriptions are the evidence only when no images are sent; next to the images or a visual brief they are redundant.
+            VisualDescriptions = inspectReferenceImages ? null : descriptions
         };
-        return await BuildAsync(id, tab, AiJobKind.PromptComposition, new(projectId, ShotId: shot.Id, CompositionId: c.Id),
-            shot.Title + " · " + c.Name + " · Compose prompt", request, model, followsDefault, Copy(await settings.LoadAsync(ct)), ProductionPolicy.Profile,
-            PromptComposer.BuildMessages(request, inspectReferenceImages ? images.Select(i => i.Bytes).ToArray() : Array.Empty<byte[]>(), modFrames), 0.7f, null, ct);
+        var configured = Copy(await settings.LoadAsync(ct));
+        var attached = inspectReferenceImages ? images.Select(i => i.Bytes).ToArray() : Array.Empty<byte[]>();
+        var target = new AiJobTarget(projectId, ShotId: shot.Id, CompositionId: c.Id);
+        var label = shot.Title + " · " + c.Name + " · Compose prompt";
+        if (model.Backend != AiBackend.ComfyUI || attached.Length == 0 && modFrames.Count == 0)
+            return await BuildAsync(id, tab, AiJobKind.PromptComposition, target, label, request, model, followsDefault, configured, ProductionPolicy.Profile,
+                PromptComposer.BuildMessages(request, attached, modFrames), 0.7f, null, ct);
+        // ComfyUI composes in two steps, so the images and the long composition guide never share one prompt:
+        // a visual brief from the images, then a text-only composition from that brief. A cached brief skips step one.
+        var briefMessages = PromptComposer.BuildBriefMessages(request, attached, modFrames).Select(AiTextMessage.Capture).ToArray();
+        var key = VisualBriefCache.Key(model, ComfyTextSettings.BatchImageSide(model, configured), briefMessages);
+        var cached = briefs is null ? null : await briefs.ReadAsync(key, ct);
+        return await BuildAsync(id, tab, AiJobKind.PromptComposition, target, label, request, model, followsDefault, configured, ProductionPolicy.Profile,
+            PromptComposer.BuildMessages(request, [], [], visualBrief: true), 0.7f, null, ct, (cached is null ? briefMessages : null, cached, key));
     }
     public async Task<AiJobSubmission> ScriptAsync(Guid id, Guid tab, ScriptAssistantRequest request, bool followsDefault, CancellationToken ct = default)
     {
@@ -159,7 +174,8 @@ public sealed partial class AiTextJobCapture(IAiSettingsStore settings, IProject
         return await ComfyReferenceImageEditor.PrepareSourcePngAsync(media.Content, crop, ct);
     }
     private async Task<AiJobSubmission> BuildAsync<T>(Guid id, Guid tab, AiJobKind kind, AiJobTarget target, string label, T payload,
-        TextModelReference model, bool followsDefault, AiSettings configured, string profile, List<ChatMessage> messages, float temperature, string? baseline, CancellationToken ct)
+        TextModelReference model, bool followsDefault, AiSettings configured, string profile, List<ChatMessage> messages, float temperature, string? baseline, CancellationToken ct,
+        (IReadOnlyList<AiTextMessage>? Messages, string? Brief, string Key)? brief = null)
     {
         model = TextModelPolicy.WithDefaultEffort(model, configured);
         TextModelPolicy.Validate(model); TextModelPolicy.CheckRequestServer(model, configured); FileAiSettingsStore.Validate(configured);
@@ -169,7 +185,9 @@ public sealed partial class AiTextJobCapture(IAiSettingsStore settings, IProject
         var project = await projects.GetAsync(target.ProjectId!.Value, ct) ?? throw new ProjectStoreException("This project no longer exists.");
         var version = TextModelProfiles.RequiresSnapshotVersion3(model) ? 3 : 2;
         var snapshot = new AiTextJobRequest(version, kind, model, followsDefault, configured, profile, temperature, Random.Shared.NextInt64(1, long.MaxValue),
-            JsonSerializer.SerializeToElement(payload, AtomicJsonFile.Options), messages.Select(AiTextMessage.Capture).ToArray(), baseline);
+            JsonSerializer.SerializeToElement(payload, AtomicJsonFile.Options), messages.Select(AiTextMessage.Capture).ToArray(), baseline)
+        { BriefMessages = brief?.Messages, VisualBrief = brief?.Brief, BriefKey = brief?.Key };
+        snapshot = ComfyTextCapacity.FitReplyLimit(snapshot);
         ComfyTextVision.ValidateSnapshot(snapshot);
         if (model.Backend == AiBackend.Codex)
             snapshot = snapshot with { Codex = CodexClient.Capture(await (codex ?? throw new AiGenerationException("Codex is not configured.")).CheckAsync(configured.Codex, ct), model.Model, model.ReasoningEffort) };
