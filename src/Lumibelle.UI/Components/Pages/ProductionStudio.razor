@@ -23,14 +23,14 @@ else
 {
     <ProjectNavigation Project="_project" CurrentStudio="shots" />
     <StudioPageHeader Title="Shots">
-        <div data-interactive="@(_interactive ? "true" : "false")" class="shots-actions shots-heading"><span role="status">@_saveStatus</span><button disabled="@(!_dirty || _saving)" @onclick="Save">Save</button><button disabled="@(_undo.Count == 0)" @onclick="UndoEdit">Undo</button><button @onclick="() => _recoveryOpen = true">Recovery</button></div>
+        <div data-interactive="@(_interactive && _planningInitialized ? "true" : "false")" class="shots-actions shots-heading"><span role="status">@_saveStatus</span><button disabled="@(!_dirty || _saving)" @onclick="Save">Save</button><button disabled="@(_undo.Count == 0)" @onclick="UndoEdit">Undo</button><button @onclick="() => _recoveryOpen = true">Recovery</button></div>
     </StudioPageHeader>
     @if (_error is not null && _loadFailure is null) { <MudAlert Severity="Severity.Error"><span role="alert">@_error</span>@if (_saveFailed) { <button @onclick="Reload">Reload saved version</button><button @onclick="DownloadDraft">Download unsaved copy</button> }</MudAlert> }
     @if (_loadFailure is not null) { <LoadFailure Title="Couldn’t open Shots" Error="_loadFailure" Retry="RetryLoadAsync" /> }
     else {
     <StudioWorkspace @ref="_workspace" Studio="Shots" ProjectId="Id" LeftLabel="Shots" RightLabel="Shot tools" SelectionKey="@_selected?.ToString()">
         <Left><StudioPane Class="shots-outline" Label="Shots"><Header>
-            <div class="shots-library-heading"><h2>Shots <small>@_doc.Shots.Count</small></h2><button @ref="_addShotButton" @onclick="AddShot">+ Shot</button></div>
+            <div class="shots-library-heading"><h2>Shots <small>@_doc.Shots.Count</small></h2><button @ref="_addShotButton" @onclick="AddShot" disabled="@(!_planningInitialized)" title="@(_planningInitialized ? null : "Loading shots…")">+ Shot</button></div>
             <div class="shots-library-tools" @ref="_planningOriginElement"><TextAssistance @ref="_planningAssist" ProjectId="Id" Studio="TextAssistantStudio.Shots" Request="PlanningPresentation" Preparing="_planningSubmitting" HasError="@(_pendingPlanning is not null)" ReviewRequested="InspectPlanning" CancelRequested="CancelPlanning" Label="Draft shots" Title="Draft shots" Opened="PreparePlanning" SelectionChanged="value => _model = value" ModelLocked="@(_planning || _planningSubmitting)">
 <ChildContent>        <fieldset disabled="@PlanningComposerLocked"><legend>Script scenes</legend>@foreach (var scene in PlanningScenes) { <label class="check-row"><input type="checkbox" checked="@_sceneSelection.Contains(scene.Id)" @onchange="e => ChooseScene(scene.Id, e.Value is true)" />@scene.Title</label> }</fieldset>
         <label>Maximum shot length (seconds)<input type="number" min="1" max="15" step="0.1" @bind="_maximum" disabled="@PlanningComposerLocked" /></label><p class="field-hint">@MaximumLabel · applies to this breakdown only.</p>
@@ -55,12 +55,26 @@ else
             else if (PromptAttentionCount is > 0 and var attention) { <small class="shots-attention-summary" role="status">@attention @(attention == 1 ? "shot needs" : "shots need") prompt attention</small> }
         </Header><ChildContent>
             @if (_doc.Shots.Count > 0 && !VisibleGroups.Any()) { <p>No shots match these filters.</p><button @onclick="ClearPromptFilters">Show all shots</button> }
-            @foreach (var group in VisibleGroups) { <h2 class="shot-scene-title">@group.First().SceneTitle</h2>@foreach (var item in group) {
-                <div class="shot-outline-item @(item.Id == _selected ? "selected" : "")">
+            <ShotListOrder Disabled="ShotListLocked" Moved="MoveShotTo">
+            @foreach (var group in VisibleGroups) {
+                var collapsed = SceneCollapsed(group[0]); var sceneCount = SceneShots(group[0]).Count();
+                <h2 class="shot-scene-title"><button class="shot-scene-toggle" aria-expanded="@(collapsed ? "false" : "true")" @onclick="() => ToggleScene(group[0])"><span aria-hidden="true">@(collapsed ? "▸" : "▾")</span><span class="shot-scene-name">@SceneLabel(group[0])</span><small>@(group.Count == sceneCount ? $"{sceneCount}" : $"{group.Count} of {sceneCount}")</small></button></h2>
+                @if (collapsed) { continue; }
+                @foreach (var item in group) {
+                <div class="shot-outline-item @(item.Id == _selected ? "selected" : "")" @key="item.Id" data-shot-row="@item.Id" data-scene="@SceneKey(item)">
+                <button class="shot-drag" data-shot-drag disabled="@ShotListLocked" aria-label="@($"Move shot {_doc.Shots.IndexOf(item) + 1}: {item.Title}")" title="Drag to reorder within the scene; click for Move to…" @onclick="() => OpenShotMove(item.Id)">⠿</button>
                 <button data-shot-id="@item.Id" class="shot-list-row @(item.Id == _selected ? "selected" : "")" aria-pressed="@(item.Id == _selected ? "true" : "false")" @onclick="() => Select(item.Id)">
                     <span class="shot-list-thumbnail">@if (OverviewTake(item) is { } thumbnail) { <img src="@TakeUrl(thumbnail.Id, 0)" alt="" loading="lazy" /> } else { <span aria-hidden="true">@((_doc.Shots.IndexOf(item) + 1).ToString("00"))</span> }</span>
                     <span class="shot-list-copy"><span class="shot-list-title">@(_doc.Shots.IndexOf(item) + 1). @item.Title</span><small>@DurationLabel(item) · @_doc.Takes.Count(t => t.ShotId == item.Id) takes @if (NewTakeCount(item.Id) is > 0 and var fresh) { <span class="shot-new-takes">· @fresh new</span> }</small></span>
                 </button>
+                <MudMenu Icon="@Icons.Material.Outlined.MoreHoriz" AriaLabel="@($"Actions for shot {_doc.Shots.IndexOf(item) + 1}: {item.Title}")" Size="Size.Small" Dense="true" Class="shot-row-menu" AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight">
+                    <MudMenuItem role="menuitem" Disabled="@(ShotListLocked || SceneNeighbour(item, -1) is null)" OnClick="() => MoveShotInScene(item.Id, -1)">Move up</MudMenuItem>
+                    <MudMenuItem role="menuitem" Disabled="@(ShotListLocked || SceneNeighbour(item, 1) is null)" OnClick="() => MoveShotInScene(item.Id, 1)">Move down</MudMenuItem>
+                    <MudMenuItem role="menuitem" Disabled="@(ShotListLocked || sceneCount < 2)" OnClick="() => OpenShotMove(item.Id)">Move to…</MudMenuItem>
+                    <MudMenuItem role="menuitem" Disabled="ShotListLocked" OnClick="() => DuplicateShotRow(item.Id)">Duplicate</MudMenuItem>
+                    <MudMenuItem role="menuitem" Href="@ProjectLink(Id, $"/dubs?shotId={item.Id}")">Language versions</MudMenuItem>
+                    <MudMenuItem role="menuitem" Disabled="ShotListLocked" OnClick="() => OpenShotDeletion(item.Id)" Class="danger-link">Delete</MudMenuItem>
+                </MudMenu>
                 @if (PromptReviewReady(item.Id)) {
                     <button @ref="_reviewReadyBadges[item.Id]" class="shot-prompt-review" data-prompt-state="ReviewReady" aria-label="@($"Review the composed prompt for shot {_doc.Shots.IndexOf(item) + 1}: {item.Title}")" title="An AI-composed prompt is ready. Review it, then apply or discard it." @onclick="() => ReviewComposedPrompt(item.Id)">Review ready <span aria-hidden="true">→</span></button>
                 }
@@ -69,21 +83,35 @@ else
                 }
                 </div>
             } }
+            </ShotListOrder>
         </ChildContent></StudioPane></Left>
         <Center><StudioPane Class="shot-editor production-editor" Label="Shot editor"><Header>
             @if (SourceShot is { } identity) {
                 <div class="shot-workspace-identity">
                     <span class="shot-number">@((_doc.Shots.IndexOf(identity) + 1).ToString("00"))</span>
                     <input aria-label="Shot title" class="shot-title-input" @bind:get="identity.Title" @bind:set="value => EditCoverage(s => s.Title = value ?? string.Empty)" @bind:event="oninput" />
-                    <MudMenu Label="Shot options" Size="Size.Small" Dense="true" AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight">
-                        <div role="menu" aria-label="Shot options">
-                            <MudMenuItem role="menuitem" Disabled="@(_doc.Shots.IndexOf(identity) == 0)" OnClick="() => MoveShot(-1)">Move shot up</MudMenuItem>
-                            <MudMenuItem role="menuitem" Disabled="@(_doc.Shots.IndexOf(identity) == _doc.Shots.Count - 1)" OnClick="() => MoveShot(1)">Move shot down</MudMenuItem>
-                            <MudMenuItem role="menuitem" OnClick="DuplicateShot">Duplicate shot</MudMenuItem>
-                            <MudMenuItem role="menuitem" Href="@ProjectLink(Id, "/dubs")">Language versions</MudMenuItem>
-                            <MudMenuItem role="menuitem" OnClick="() => OpenShotDeletion(identity.Id)">Delete shot</MudMenuItem>
-                        </div>
-                    </MudMenu>
+                    <div class="shot-draft-assist" @ref="_shotDraftOriginElement">
+                    <TextAssistance @ref="_shotDraftAssist" ProjectId="Id" Studio="TextAssistantStudio.Shots" Request="ShotDraftPresentation" Preparing="_shotDraftSubmitting"
+                        HasError="@(_pendingShotDraft is not null)" ReviewRequested="InspectShotDraft" CancelRequested="CancelShotDraft"
+                        Label="Draft shot" Title="Draft this shot" Opened="PrepareShotDraft" SelectionChanged="value => _shotDraftModel = value" ModelLocked="ShotDraftLocked">
+                        <ChildContent>
+                            <p class="field-hint">@identity.Title · @SceneLabel(identity)</p>
+                            <p class="field-hint">Drafts this shot from its scene in the saved script. The scene's @OtherSceneShots(identity).Count other @(OtherSceneShots(identity).Count == 1 ? "shot is" : "shots are") sent as context, so the draft covers something they don't unless your directions say otherwise.</p>
+                            <p class="field-hint shot-draft-place">@ShotDraftPlace(identity) Drag the shot in the list to change where it goes.</p>
+                            @if (HasCoverage(identity)) { <p class="field-hint">This shot's current action and dialogue are sent too, for the directions to revise. Applying replaces them; Undo restores them.</p> }
+                            <label>Directions (optional)<textarea rows="3" @bind="_shotDraftDirections" @bind:event="oninput" disabled="@ShotDraftLocked" placeholder="For example: a close-up of the key in her hand as she hesitates."></textarea></label>
+                            @if (_recentInstructions.Count > 0)
+                            {
+                                <div class="recent-instructions" role="group" aria-label="Recent directing instructions"><span class="field-hint">Recent instructions</span>
+                                    @foreach (var recent in _recentInstructions) { <button type="button" class="recent-instruction" title="@recent" disabled="@ShotDraftLocked" @onclick="() => _shotDraftDirections = recent">@recent</button> }
+                                </div>
+                            }
+                            <label>Maximum length (seconds)<input type="number" min="1" max="15" step="0.1" @bind="_shotDraftMaximum" disabled="@ShotDraftLocked" /></label>
+                            @if (ShotDraftIssue(identity) is { } draftIssue) { <p role="status">@draftIssue</p> }
+                            @if (_shotDraftError is not null) { <p role="alert">@_shotDraftError</p> }
+                        </ChildContent>
+                        <Actions><MudButton Class="ai-assist-action" OnClick="DraftShot" Disabled="@(ShotDraftLocked || _shotDraftModel?.Ready != true || ShotDraftIssue(identity) is not null)" Variant="Variant.Filled" Color="Color.Primary"><AiAssistIcon />Draft shot</MudButton>@if (_pendingShotDraft is not null) { <button @onclick="RetryShotDraftEnqueue" disabled="@_shotDraftSubmitting">Retry saving request</button> }</Actions>
+                    </TextAssistance></div>
                 </div>
                 <StudioToolTabs Items="@(new StudioTab[] { new("Shot", "Shot"), new("Takes", "Takes", ShotTakes.Count) })" Label="Shot view" GroupId="center" />
             }
@@ -255,6 +283,20 @@ else
                         <a href="@(ProjectLink(Id, "/assets?view=voices"))">Manage voice recordings in Assets</a>
                         </details>
                     </section>
+                    <details class="shot-loras"><summary>LoRAs · @ShotLoraSummary(shot)</summary>
+                        <p class="field-hint">LoRAs for this shot in every setup, applied on top of the preset's. For a LoRA in both, this shot's strength is used.</p>
+                        @if (PresetLoraNames(shot) is { Count: > 0 } presetNames) { <p class="field-hint">From the preset: @string.Join(", ", presetNames)</p> }
+                        @if (_loraSettings is { } shotLoraSettings)
+                        {
+                            <LoraPicker @key="@($"shot-{shot.Id}")" InputId="shot-lora-add" Settings="shotLoraSettings" Workflow="LoraWorkflow.MiniMaxH3Ref2VA" Selections="@(shot.ShotLoras ?? [])"
+                                Check="_loraCheck" Visibility="_loraVisibility" Disabled="LorasLocked" Changed="ChangeShotLoras" Refresh="RefreshH3LorasAsync"
+                                InsertTrigger="InsertLoraTrigger" TriggerButtonText="Insert trigger into directing notes"
+                                ValidityChanged="valid => _shotLoraValidity[shot.Id] = valid"
+                                ManageUrl="@(AiSettingsNavigation.Link(Navigation, "loras", Id, "shots"))" ProjectSettingsUrl="@(ProjectLink(Id, "/settings"))" />
+                        }
+                        else { <button @onclick="RefreshH3LorasAsync" disabled="@_loraRefreshing">Refresh LoRAs</button> }
+                        @if (_loraError is not null) { <p role="alert">@_loraError</p> }
+                    </details>
                 }</ChildContent>
                 <Footer>@if (Selected is { } shot) {
                     <fieldset @key="Current?.Id" class="generation-output" disabled="@(_starting || _setupBusy || _selectingShot)" aria-label="Generation output">
@@ -301,6 +343,48 @@ else
     }
 }
 
+<InlineDialog Visible="_shotDraftOpen" VisibleChanged="async v => { if (!v) await CloseShotDraft(); }" Options="@(new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true })" Class="shot-draft-dialog"
+              Title="Drafted shot" Context="@_doc.Shots.FirstOrDefault(s => s.Id == _shotDraftReviewJob?.Target.ShotId)?.Title" CloseLabel="Close drafted shot"><DialogContent>
+    @if (_shotDraftReviewJob is { } draftJob) { <AiTextRequestDetails JobId="draftJob.Id" /> }
+    @if (_shotDraftError is not null) { <p role="alert">@_shotDraftError</p> }
+    @if (ShotDraftProposal is { } draft)
+    {
+        <article class="shot-proposal"><h3>@draft.Title · @DurationLabel(draft)</h3><small>@draft.SceneTitle</small><p>@draft.Description</p>
+            @foreach (var line in draft.Dialogue) { <p><strong>@line.Speaker:</strong> @line.Text</p> }
+            @if (draft.Characters.Count > 0) { <p class="field-hint">Cast: @string.Join(", ", draft.Characters.Select(c => c.Name))</p> }
+            <p class="field-hint">Sound: @draft.Atmosphere · Music: @draft.Music</p>
+        </article>
+        @if (_shotDraftResult!.DialogueNotes.Count + _shotDraftResult.SourceNotes.Count + _shotDraftResult.CoverageNotes.Count > 0)
+        {
+            <details class="planning-dialogue-notes"><summary>Review notes · @(_shotDraftResult.DialogueNotes.Count + _shotDraftResult.SourceNotes.Count + _shotDraftResult.CoverageNotes.Count)</summary>
+                @foreach (var note in _shotDraftResult.DialogueNotes.Concat(_shotDraftResult.SourceNotes).Concat(_shotDraftResult.CoverageNotes)) { <p>@note</p> }
+            </details>
+        }
+        @if (_shotDraftResult.UncoveredDialogue.Count > 0)
+        {
+            <details><summary>Lines no shot in this scene speaks yet · @_shotDraftResult.UncoveredDialogue.Count</summary>@foreach (var line in _shotDraftResult.UncoveredDialogue) { <p>@line</p> }</details>
+        }
+        @if (_resolvedShotDrafts.Contains(_shotDraftReviewJob!.Id)) { <p role="status">This draft was already applied or dismissed.</p> }
+        else if (!ShotDraftTargetSelected) { <p role="status">Select the shot this draft is for to apply it.</p> }
+        else if (SourceShot is { } target && HasCoverage(target)) { <p class="field-hint">Applying replaces this shot's title, action, duration, dialogue and sound, and adds any new cast. Undo restores them.</p> }
+    }
+    @if (_shotDraftRaw.Length > 0) { <details><summary>Response details</summary><pre class="shot-source">@_shotDraftRaw</pre></details> }
+</DialogContent><DialogActions><MudButton OnClick="CloseShotDraft">Close</MudButton>
+    @if (ShotDraftProposal is not null && _shotDraftReviewJob is { } reviewed && !_resolvedShotDrafts.Contains(reviewed.Id))
+    {
+        <MudButton OnClick="DismissShotDraft">Dismiss</MudButton>
+        <MudButton OnClick="ApplyShotDraft" Disabled="@(!ShotDraftTargetSelected)" Variant="Variant.Filled" Color="Color.Primary">Apply to this shot</MudButton>
+    }
+</DialogActions></InlineDialog>
+<InlineDialog Visible="_moveShotId is not null" VisibleChanged="v => { if (!v) _moveShotId = null; }" Options="@(new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true })"
+              Title="Move shot" Context="@_doc.Shots.FirstOrDefault(s => s.Id == _moveShotId)?.Title" CloseLabel="Close move shot"><DialogContent>
+    @if (_doc.Shots.FirstOrDefault(s => s.Id == _moveShotId) is { } moving)
+    {
+        <p class="field-hint">Shots move within their scene, @SceneLabel(moving).</p>
+        <label>Position<select value="@(_moveShotAfter ? "after" : "before")" @onchange="@(e => _moveShotAfter = e.Value?.ToString() == "after")"><option value="before">Before</option><option value="after">After</option></select></label>
+        <label>Shot<select aria-label="Destination shot" @bind="_moveShotTarget">@foreach (var target in SceneShots(moving).Where(t => t.Id != moving.Id)) { <option value="@target.Id">@(_doc.Shots.IndexOf(target) + 1). @target.Title</option> }</select></label>
+    }
+</DialogContent><DialogActions><MudButton OnClick="() => _moveShotId = null">Cancel</MudButton><MudButton OnClick="ConfirmShotMove" Disabled="ShotListLocked" Variant="Variant.Filled" Color="Color.Primary">Move</MudButton></DialogActions></InlineDialog>
 <InlineDialog Visible="_setupDialogOpen" VisibleChanged="SetupDialogVisibility" Options="@(LargeDialog with { MaxWidth = MaxWidth.Large, CloseOnEscapeKey = false })" Class="shot-setup-dialog" DefaultFocus="DefaultFocus.FirstChild"
               Title="Prompt and preset" Context="@SourceShot?.Title" CloseLabel="Close prompt and preset">
     <DialogContent>
@@ -349,7 +433,6 @@ else
                     <div @ref="_compositionReviewOrigin"><TextAssistance Request="CompositionPresentation" Preparing="@(_compositionBusy && _compositionDialogJob is null)" HasError="@(_compositionEnqueue is not null)" ReviewRequested="InspectComposition" CancelRequested="CancelComposition" @ref="_compositionAssist" @key="(composition.ShotId, nameof(TextAssistance))" ProjectId="Id" Studio="TextAssistantStudio.Production" Title="Prompt assistance" SelectionChanged="CompositionModelChanged" ModelLocked="@(_compositionBusy || CompositionJob?.LocksTarget == true)">
                         <ExtraActions><button disabled="@(!CanClearPrompt)" title="Clear the prompt. References, settings, and Direction for AI stay." @onclick="ClearPrompt">Clear prompt</button></ExtraActions>
                         <ChildContent><p class="field-hint">@shot.Title</p>                    <label>Direction for AI<textarea rows="2" maxlength="20000" placeholder="For example: stay closer on her face, then reveal the monitor." @bind:get="composition.DirectingNotes" @bind:set="value => EditComposition(c => c.DirectingNotes = value ?? string.Empty)" @bind:event="oninput"></textarea></label>
-<label class="check-row"><input type="checkbox" @bind="_inspectCompositionImages" @bind:after="RefreshCompositionSize" disabled="@(_compositionBusy || CompositionJob?.LocksTarget == true || _compositionEnqueue is not null)" />Send reference images to the prompt-writing model</label>
 <label class="check-row"><input type="checkbox" @bind="_fullCompositionContext" @bind:after="RefreshCompositionSize" disabled="@(_compositionBusy || CompositionJob?.LocksTarget == true || _compositionEnqueue is not null)" />Include scene text and neighbouring shots</label>
 @if (_compositionModel?.Model.Backend == AiBackend.ComfyUI)
 {
@@ -375,9 +458,7 @@ else
         }
     </div>
 }
-<p class="field-hint">Turn image sending off to use a text-only model; every reference then needs a saved visual description. This affects only prompt assistance, not the references sent to video generation.</p>
-@if (CompositionDescriptionIssue is { } descriptionIssue) { <p role="status">@descriptionIssue</p> }
-@if (_inspectCompositionImages && (ResolvedReferences.For(shot).Pictures.Count > 0 || ReelRefMods.Uses(shot)) && _compositionModel is { SupportsImages: false }) { <p role="status">Choose a vision model, or turn off image sending and use saved descriptions.</p> }@if (_compositionError is not null) { <p role="alert">@_compositionError</p> }</ChildContent>
+@if ((ResolvedReferences.For(shot).Pictures.Count > 0 || ReelRefMods.Uses(shot)) && _compositionModel is { SupportsImages: false }) { <p role="status">Choose a model that can inspect images.</p> }@if (_compositionError is not null) { <p role="alert">@_compositionError</p> }</ChildContent>
                         <Actions><MudButton Class="ai-assist-action" @ref="_composeButton" OnClick="ComposePrompt" Disabled="@(!CanCompose)" Variant="Variant.Filled" Color="Color.Primary"><AiAssistIcon />@(string.IsNullOrWhiteSpace(composition.Prompt) ? "Compose prompt" : "Revise with AI")</MudButton>@if (_compositionEnqueue is not null) { <button @onclick="RetryCompositionEnqueue">Retry saved request</button> }</Actions>
                     </TextAssistance></div>
                     </ToolbarActions></PromptEditor>
@@ -413,7 +494,7 @@ else
 
                         @if (_loraSettings is { } loraSettings)
                         {
-                            <LoraPicker @key="Current!.Id" Settings="loraSettings" Workflow="LoraWorkflow.MiniMaxH3Ref2VA" Selections="H3Loras.Selections(shot)"
+                            <LoraPicker @key="Current!.Id" Settings="loraSettings" Workflow="LoraWorkflow.MiniMaxH3Ref2VA" Selections="@(shot.Loras ?? [])"
                                 Check="_loraCheck" Visibility="_loraVisibility" Disabled="LorasLocked" Changed="ChangeLoras" Refresh="RefreshH3LorasAsync"
                                 InsertTrigger="InsertLoraTrigger" TriggerButtonText="Insert trigger into directing notes"
                                 ValidityChanged="valid => _loraValidity[Current!.Id] = valid"

@@ -48,7 +48,9 @@ public static class ProductionPolicy
             Guidance = ShotReferences.Resolve(shot, assets, shots), Appearances = ShotLooks.Capture(shot, assets) };
         var fingerprint = shot.CharacterVoices is not null ? ReferenceSetups.Hash(new { Context = context, shot.Videos, shot.CharacterVoices })
             : shot.Videos.Count == 0 ? ReferenceSetups.Hash(context) : ReferenceSetups.Hash(new { Context = context, shot.Videos });
-        return CompositionDescriptions.Fingerprint(fingerprint, shot, assets);
+        // Shot LoRAs join the context only when chosen, so prompts reviewed before they existed keep their fingerprint.
+        if (shot.ShotLoras is { Count: > 0 } own) fingerprint = ReferenceSetups.Hash(new { Base = fingerprint, ShotLoras = own });
+        return fingerprint;
     }
     // What changed since a composition request, in the author's terms, so a changed
     // response can be applied knowingly instead of silently refused.
