@@ -60,7 +60,7 @@ public static class ComfyTextCapacity
         var footprint = await run("footprint", client => Workflow(client, context), ct);
         if (!footprint.Completed || footprint.PeakTorchAllocatedBytes is not { } shortPeak) return benchmark;
         benchmark = benchmark with { BytesPerReplyToken = PerToken(full, shortPeak, benchmark.TokenLimit - FootprintTokens) };
-        foreach (var larger in new[] { ComfyTextBenchmark.LargeContextTokens, ComfyTextBenchmark.FallbackContextTokens })
+        foreach (var larger in new[] { ComfyTextBenchmark.LargeContextTokens, ComfyTextBenchmark.FallbackContextTokens, ComfyTextBenchmark.SmallFallbackContextTokens })
         {
             var measured = await run("context-" + larger, client => Workflow(client, larger), ct);
             // With dynamic VRAM loading a prompt that does not fit is streamed from system RAM instead of failing.
@@ -77,6 +77,9 @@ public static class ComfyTextCapacity
     /// <summary>Prompt tokens (text and images) that fit with the given reply limit, under the benchmark's conditions.</summary>
     public static int? PromptCapacity(ComfyTextModelBenchmark? benchmark, int replyTokens)
     {
+        // When every larger test prompt failed, the benchmark's own prompt is the most that is known to fit.
+        if (benchmark is { CustomPrompt: false, BytesPerPromptToken: null, OutOfMemoryContextTokens: not null, ContextTokens: { } fits })
+            return fits;
         if (benchmark is not { CustomPrompt: false, BytesPerPromptToken: { } perPrompt and > 0, CapacityContextTokens: { } measured,
             CapacityPeakVramUsedBytes: { } peak, VramTotalBytes: { } total }) return null;
         // The capacity run reserved FootprintTokens of reply; a longer reply limit reserves more KV cache.
@@ -113,6 +116,40 @@ public static class ComfyTextCapacity
             return request;
         var raised = Math.Min(RaisedReplyCap, fits) / 256 * 256;
         return raised > request.Settings.MaxOutputTokens ? request with { Settings = request.Settings with { MaxOutputTokens = raised } } : request;
+    }
+
+    /// <summary>
+    /// With the Automatic image size, gives a request the largest size for multiple references whose prompt fits the measured
+    /// capacity at its reply limit: the full size without a measurement or with fewer than two images, the smallest when none fits.
+    /// The size is recorded in the request's settings, so retries and recovery use the same images. A chosen size is left alone.
+    /// </summary>
+    public static AiSettings FitImageSide(TextModelReference model, AiSettings settings, IReadOnlyList<AiTextMessage> messages, int replyTokens)
+    {
+        if (model.Backend != AiBackend.ComfyUI || ComfyTextSettings.Resolve(model, settings).BatchImageSide is not null) return settings;
+        var input = ComfyTextVision.Capture(messages.Select(m => m.ToMessage()));
+        var side = input.Images.Count < 2 || PromptCapacity(Benchmark(model, settings), replyTokens) is not { } capacity ? ComfyTextVision.BatchMaximumSide
+            : ComfyTextSettings.BatchImageSides.FirstOrDefault(s => Estimate(model.Model, input, replyTokens, s) is { } size && size.PromptTokens <= capacity,
+                ComfyTextSettings.BatchImageSides[^1]);
+        return ComfyTextSettings.WithBatchImageSide(model, settings, side);
+    }
+
+    /// <summary>
+    /// Whether a request fits the measured capacity as one prompt, at the image size it would get. Only an estimate on the CPU;
+    /// false without a measurement, so a model that was never measured keeps the smaller two-step prompts.
+    /// </summary>
+    public static bool FitsInOneRequest(TextModelReference model, AiSettings settings, IReadOnlyList<AiTextMessage> messages, int replyTokens)
+    {
+        if (model.Backend != AiBackend.ComfyUI || PromptCapacity(Benchmark(model, settings), replyTokens) is not { } capacity) return false;
+        var side = ComfyTextSettings.BatchImageSide(model, FitImageSide(model, settings, messages, replyTokens));
+        return Estimate(model.Model, ComfyTextVision.Capture(messages.Select(m => m.ToMessage())), replyTokens, side) is { } size && size.PromptTokens <= capacity;
+    }
+
+    /// <summary>Fits the image size to the step that sends images: the visual brief of a two-step composition, or the request itself.</summary>
+    public static AiTextJobRequest FitImageSide(AiTextJobRequest request)
+    {
+        var reply = TextGenerationOptions.Captured(request).MaxOutputTokens ?? request.Settings.MaxOutputTokens;
+        var (messages, tokens) = request.BriefMessages is { } brief ? (brief, Math.Min(Production.PromptComposer.BriefTokensOf(request), reply)) : (request.Messages, reply);
+        return request with { Settings = FitImageSide(request.Model, request.Settings, messages, tokens) };
     }
 
     /// <summary>The newest standard benchmark with capacity measurements for this model and server.</summary>
@@ -163,7 +200,7 @@ public static class ComfyTextCapacity
             Estimate(request.Model.Model, ComfyTextVision.Capture(messages.Select(m => m.ToMessage())), replyTokens, side) is { } size
                 ? new(step, size, PromptCapacity(benchmark, replyTokens)) : null;
         if (!request.TwoStep) return Stage(null, request.Messages, reply) is { } single ? [single] : null;
-        var briefTokens = Math.Min(Production.PromptComposer.BriefTokens, reply);
+        var briefTokens = Math.Min(Production.PromptComposer.BriefTokensOf(request), reply);
         var stages = new List<ComfyTextStageSize>();
         if (request.BriefMessages is { } briefMessages && Stage("Step 1 (visual brief)", briefMessages, briefTokens) is { } first) stages.Add(first);
         var brief = request.VisualBrief ?? new string('.', briefTokens * CharactersPerToken);

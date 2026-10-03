@@ -129,6 +129,39 @@ public sealed class TwoStepCompositionTests : IDisposable
         Rejects(request with { Messages = PromptComposer.BuildMessages(composition, images).Select(AiTextMessage.Capture).ToArray() });
         Rejects(request with { Model = new(AiBackend.OpenRouter, "vision", "Vision") });
         Rejects(request with { BriefKey = null });
+        Rejects(request with { BriefTokens = 100_000 });
+        Assert.True(AiTextJobHandler.Read(Header(request with { BriefTokens = 1936 }), JsonSerializer.SerializeToElement(request with { BriefTokens = 1936 }, AtomicJsonFile.Options)).TwoStep);
+    }
+
+    [Fact]
+    public void ABriefThatRepeatsItselfIsReadOnce()
+    {
+        // Gemma 4 12B listed seven RefMod frames as "Frame 1" to "Frame 50" with the same sentence, until its reply limit.
+        var looping = "<Picture 1> Riley: short dark hair.\nSetting: plain studio.\n\n<Picture 2> Sam: grey coat.\nSetting: plain studio.\n\n<Video 1>\n" +
+            string.Join("\n", Enumerable.Range(1, 50).Select(n => $"Frame {n}: The woman is shown from the waist up, facing forward.")) +
+            "\nFrame 51: A close-up of her face.";
+        var read = PromptComposer.ReadBrief(looping)!;
+        Assert.Equal("<Picture 1> Riley: short dark hair.\nSetting: plain studio.\n\n<Picture 2> Sam: grey coat.\nSetting: plain studio.\n\n<Video 1>\n" +
+            "Frame 1: The woman is shown from the waist up, facing forward.\nFrame 51: A close-up of her face.", read);
+        // Reading again changes nothing, so a captured brief still validates.
+        Assert.Equal(read, PromptComposer.ReadBrief(read));
+        Assert.Contains("never number or list the frames", PromptComposer.BuildBriefMessages(Composition().Request, Composition().Images, [])[0].Text);
+    }
+
+    [Fact]
+    public void TheBriefsBudgetGrowsWithItsReferences()
+    {
+        // Up to six references keep the original budget; fourteen get room for every one, within a cap.
+        Assert.Equal(PromptComposer.BriefTokens, PromptComposer.BriefTokensFor(1));
+        Assert.Equal(PromptComposer.BriefTokens, PromptComposer.BriefTokensFor(6));
+        Assert.Equal(256 + 14 * 120, PromptComposer.BriefTokensFor(14));
+        Assert.Equal(PromptComposer.MaximumBriefTokens, PromptComposer.BriefTokensFor(40));
+        var (composition, images) = Composition();
+        Assert.Contains("Stay under 600 words", PromptComposer.BuildBriefMessages(composition, images, [])[0].Text);
+        // Older snapshots without a captured limit keep the fixed one, and the estimate counts the captured one.
+        var request = TwoStep(composition, images);
+        Assert.Equal(PromptComposer.BriefTokens, PromptComposer.BriefTokensOf(request));
+        Assert.Equal(1936, ComfyTextCapacity.Assess(request with { BriefTokens = 1936 })![0].Size.ReplyTokens);
     }
 
     [Fact]

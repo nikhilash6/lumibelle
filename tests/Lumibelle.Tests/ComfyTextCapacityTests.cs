@@ -112,6 +112,42 @@ public sealed class ComfyTextCapacityTests
     }
 
     [Fact]
+    public void AutomaticImageSizeIsTheLargestThatFits()
+    {
+        int Side(AiSettings settings, ChatMessage[] messages) =>
+            ComfyTextSettings.BatchImageSide(Model, ComfyTextCapacity.FitImageSide(Request(settings, messages)).Settings);
+        var nine = Enumerable.Range(0, 9).Select(_ => Png(1024, 1024)).ToArray();
+        // Nine references overflow at 1,024 pixels but fit at 512, as in the notice above; two fit at full size.
+        Assert.Equal(512, Side(Settings(Measured()), Messages(8600, 10800, nine)));
+        Assert.Equal(1024, Side(Settings(Measured()), Messages(8600, 10800, nine[..2])));
+        // With a short prompt, nine references fit at 768 pixels (576 tokens each) but not at 1,024.
+        Assert.Equal(768, Side(Settings(Measured()), Messages(2000, 2000, nine)));
+        // Nothing measured: the full size. A chosen size, a single image or a prompt that never fits: as stated.
+        Assert.Equal(1024, Side(Settings(null), Messages(8600, 10800, nine)));
+        Assert.Equal(1024, Side(Settings(Measured(), 1024), Messages(8600, 10800, nine)));
+        Assert.Equal(1024, Side(Settings(Measured()), Messages(8600, 10800, nine[..1])));
+        Assert.Equal(512, Side(Settings(Measured()), Messages(8600, 400_000, nine)));
+        // The size is recorded, so the request keeps it whatever the settings say later.
+        Assert.Equal(512, ComfyTextCapacity.FitImageSide(Request(Settings(Measured()), Messages(8600, 10800, nine))).Settings.ComfyTextModels[TextModelPolicy.Key(Model)].BatchImageSide);
+    }
+
+    [Fact]
+    public void ARequestIsSentWholeOnlyWhenItFitsTheMeasuredCapacity()
+    {
+        bool Fits(AiSettings settings, ChatMessage[] messages, TextModelReference? model = null) =>
+            ComfyTextCapacity.FitsInOneRequest(model ?? Model, settings, messages.Select(AiTextMessage.Capture).ToArray(), 2048);
+        var nine = Enumerable.Range(0, 9).Select(_ => Png(1024, 1024)).ToArray();
+        // About 9,000 prompt tokens fit: two references with a composition-sized prompt do, nine only once shrunk to 512 pixels.
+        Assert.True(Fits(Settings(Measured()), Messages(8600, 10800, nine[..2])));
+        Assert.True(Fits(Settings(Measured()), Messages(8600, 10800, nine)));
+        Assert.False(Fits(Settings(Measured(), 1024), Messages(8600, 10800, nine)));
+        Assert.False(Fits(Settings(Measured()), Messages(8600, 30000, nine)));
+        // Never measured, or not ComfyUI: keep the two steps.
+        Assert.False(Fits(Settings(null), Messages(100, 100, nine[..2])));
+        Assert.False(Fits(Settings(Measured()), Messages(100, 100, nine[..2]), new(AiBackend.OpenRouter, "vision", "Vision")));
+    }
+
+    [Fact]
     public void ReplyCapacityShrinksAsThePromptGrows()
     {
         var small = ComfyTextCapacity.ReplyCapacity(Measured(), 2000)!.Value;
@@ -175,16 +211,17 @@ public sealed class ComfyTextCapacityTests
     }
 
     [Theory]
-    [InlineData(false, false)]
-    [InlineData(true, false)]
-    [InlineData(true, true)]
-    public async Task MeasurementFallsBackToASmallerPromptWhenTheLargeOneRunsOutOfMemory(bool largeFails, bool fallbackFails)
+    [InlineData(false, false, false)]
+    [InlineData(true, false, false)]
+    [InlineData(true, true, false)]
+    [InlineData(true, true, true)]
+    public async Task MeasurementFallsBackToASmallerPromptWhenTheLargeOneRunsOutOfMemory(bool largeFails, bool fallbackFails, bool smallFails)
     {
         var runs = new List<string>();
         Task<ComfyMeasuredRun> Run(string name, Func<string, object> workflow, CancellationToken _)
         {
             runs.Add(name);
-            var oom = name == "context-8192" && largeFails || name == "context-4096" && fallbackFails;
+            var oom = name == "context-8192" && largeFails || name == "context-4096" && fallbackFails || name == "context-3072" && smallFails;
             var context = name.StartsWith("context-", StringComparison.Ordinal) ? int.Parse(name[8..]) : ComfyTextBenchmark.ContextTokens;
             return Task.FromResult(new ComfyMeasuredRun(!oom, oom, oom ? null : 1_000_000_000L + context * 300_000L, 15_000_000_000));
         }
@@ -193,10 +230,14 @@ public sealed class ComfyTextCapacityTests
         var measured = await ComfyTextCapacity.MeasureAsync(start, File, "Describe.", 7, Run, Ct);
 
         Assert.Equal(50_000, measured.BytesPerReplyToken);
-        Assert.Equal(largeFails ? ["footprint", "context-8192", "context-4096"] : ["footprint", "context-8192"], runs);
-        Assert.Equal(largeFails ? fallbackFails ? 4096 : 8192 : null, measured.OutOfMemoryContextTokens);
-        Assert.Equal(fallbackFails ? null : 300_000, measured.BytesPerPromptToken);
-        Assert.Equal(fallbackFails ? null : largeFails ? 4096 : 8192, measured.CapacityContextTokens);
+        string[] tried = ["footprint", "context-8192", "context-4096", "context-3072"];
+        Assert.Equal(tried[..(!largeFails ? 2 : !fallbackFails ? 3 : 4)], runs);
+        Assert.Equal(!largeFails ? null : !fallbackFails ? 8192 : !smallFails ? 4096 : 3072, measured.OutOfMemoryContextTokens);
+        Assert.Equal(smallFails ? null : 300_000, measured.BytesPerPromptToken);
+        Assert.Equal(smallFails ? null : !largeFails ? 8192 : !fallbackFails ? 4096 : 3072, measured.CapacityContextTokens);
+        // Even when every larger prompt failed, the benchmark's own prompt is known to fit.
+        Assert.Equal(smallFails ? ComfyTextBenchmark.ContextTokens : null,
+            measured.BytesPerPromptToken is null ? ComfyTextCapacity.PromptCapacity(measured, 2048) : null);
     }
 
     [Fact]

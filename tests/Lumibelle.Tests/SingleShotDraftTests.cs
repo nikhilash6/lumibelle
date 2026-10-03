@@ -41,6 +41,21 @@ public sealed class SingleShotDraftTests
     }
 
     [Fact]
+    public void OnlyTheNeighbouringShotsAreDescribedInFull()
+    {
+        var (request, doc) = Fixture();
+        SceneShotSummary Shot(string title) => new(title, 3, title + " in long detail.", [], [doc.Blocks[0].Id]);
+        request = request with { SingleShot = request.SingleShot! with { Position = 2, SceneShots = [Shot("Arrival"), Shot("Door"), Shot("Key"), Shot("Exit")] } };
+        var text = ShotPlanner.BuildMessages(request)[1].Text;
+        var task = JsonNode.Parse(text)!;
+        Assert.Equal("Door", (string)task["previousShot"]!["title"]!);
+        Assert.Equal("Key", (string)task["nextShot"]!["title"]!);
+        Assert.Equal(["1. Arrival", "4. Exit"], task["otherShotTitles"]!.AsArray().Select(t => (string)t!));
+        Assert.DoesNotContain("Arrival in long detail", text);
+        Assert.DoesNotContain("Exit in long detail", text);
+    }
+
+    [Fact]
     public void OneShotIsReadAndOtherShotsCountAsCoverage()
     {
         var (request, doc) = Fixture();
@@ -88,6 +103,37 @@ public sealed class SingleShotDraftTests
         var result = ShotPlanner.Parse(reply.ToJsonString(), request);
         Assert.Null(result.Error);
         Assert.Equal(["JUNIPER", "FIGURE"], Assert.Single(result.Shots).Characters.Select(c => c.Name));
+    }
+
+    [Fact]
+    public void AListForATextFieldAndAMistypedSourceIdAreRepaired()
+    {
+        var (request, doc) = Fixture();
+        var reply = JsonNode.Parse(Reply(doc))!.AsArray()[0]!.AsObject();
+        // As a model returned it: the first group of the UUID is one character short, and music is an empty list.
+        reply["sourceBlockIds"] = new JsonArray(doc.Blocks[0].Id.ToString()[1..], "not-a-uuid");
+        reply["music"] = new JsonArray();
+        reply["atmosphere"] = new JsonArray("Quiet room", "distant traffic");
+        reply["characters"] = JsonNode.Parse("[\"JUNIPER\"]");
+        var result = ShotPlanner.Parse(reply.ToJsonString(), request);
+        Assert.Null(result.Error);
+        var shot = Assert.Single(result.Shots);
+        Assert.Equal([doc.Blocks[0].Id], shot.SourceBlockIds);
+        Assert.Equal("", shot.Music);
+        Assert.Equal("Quiet room, distant traffic", shot.Atmosphere);
+        Assert.Contains(result.SourceNotes, note => note.Contains("1 source block reference was slightly misspelled"));
+        Assert.Contains(result.SourceNotes, note => note.Contains("1 of 2 source block references did not match"));
+    }
+
+    [Fact]
+    public void AnIdIsRepairedOnlyWhenOneCandidateIsClearlyClosest()
+    {
+        var a = Guid.Parse("0edffc35-cdbb-4edf-991a-9f3ecc1ac0a7");
+        var b = Guid.Parse("0edffc35-cdbb-4edf-991a-9f3ecc1ac0b8");
+        Assert.Equal(a, ShotPlanner.Nearest("edffc35-cdbb-4edf-991a-9f3ecc1ac0a7", [a, Guid.NewGuid()]));
+        // Equally close to two IDs, or far from every one: left alone.
+        Assert.Null(ShotPlanner.Nearest("0edffc35-cdbb-4edf-991a-9f3ecc1ac0c9", [a, b]));
+        Assert.Null(ShotPlanner.Nearest(Guid.NewGuid().ToString(), [a, b]));
     }
 
     [Fact]
