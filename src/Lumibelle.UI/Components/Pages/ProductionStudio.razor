@@ -64,8 +64,8 @@ else
                 <div class="shot-outline-item @(item.Id == _selected ? "selected" : "")" @key="item.Id" data-shot-row="@item.Id" data-scene="@SceneKey(item)">
                 <button class="shot-drag" data-shot-drag disabled="@ShotListLocked" aria-label="@($"Move shot {_doc.Shots.IndexOf(item) + 1}: {item.Title}")" title="Drag to reorder within the scene; click for Move to…" @onclick="() => OpenShotMove(item.Id)">⠿</button>
                 <button data-shot-id="@item.Id" class="shot-list-row @(item.Id == _selected ? "selected" : "")" aria-pressed="@(item.Id == _selected ? "true" : "false")" @onclick="() => Select(item.Id)">
-                    <span class="shot-list-thumbnail">@if (OverviewTake(item) is { } thumbnail) { <img src="@TakeUrl(thumbnail.Id, 0)" alt="" loading="lazy" /> } else { <span aria-hidden="true">@((_doc.Shots.IndexOf(item) + 1).ToString("00"))</span> }</span>
-                    <span class="shot-list-copy"><span class="shot-list-title">@(_doc.Shots.IndexOf(item) + 1). @item.Title</span><small>@DurationLabel(item) · @_doc.Takes.Count(t => t.ShotId == item.Id) takes @if (NewTakeCount(item.Id) is > 0 and var fresh) { <span class="shot-new-takes">· @fresh new</span> }</small></span>
+                    <span class="shot-list-thumbnail">@if (OverviewTake(item) is { } thumbnail) { <img src="@TakeUrl(thumbnail.Id, 0)" alt="" loading="lazy" /><span class="shot-list-resolution @(TakeDisplay.IsDraft(thumbnail) ? "draft" : null)" title="@((thumbnail.Id == item.SelectedTakeId ? "Selected take" : "Latest take") + " · " + TakeDisplay.Megapixels(thumbnail) + (TakeDisplay.IsDraft(thumbnail) ? " · draft size" : ""))">@TakeDisplay.Megapixels(thumbnail)</span> } else { <span aria-hidden="true">@((_doc.Shots.IndexOf(item) + 1).ToString("00"))</span> }</span>
+                    <span class="shot-list-copy"><span class="shot-list-title">@(_doc.Shots.IndexOf(item) + 1). @item.Title</span><small>@DurationLabel(item) · @_doc.Takes.Count(t => t.ShotId == item.Id) takes @if (NewTakeCount(item.Id) is > 0 and var fresh) { <span class="shot-new-takes">· @fresh new</span> }@if (ShotVideoActivity(item.Id) is { } activity) { <span class="shot-generating @activity.ToLowerInvariant()"><i aria-hidden="true"></i>@activity</span> }</small></span>
                 </button>
                 <MudMenu Icon="@Icons.Material.Outlined.MoreHoriz" AriaLabel="@($"Actions for shot {_doc.Shots.IndexOf(item) + 1}: {item.Title}")" Size="Size.Small" Dense="true" Class="shot-row-menu" AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight">
                     <MudMenuItem role="menuitem" Disabled="@(ShotListLocked || SceneNeighbour(item, -1) is null)" OnClick="() => MoveShotInScene(item.Id, -1)">Move up</MudMenuItem>
@@ -113,14 +113,19 @@ else
                         <Actions><MudButton Class="ai-assist-action" OnClick="DraftShot" Disabled="@(ShotDraftLocked || _shotDraftModel?.Ready != true || ShotDraftIssue(identity) is not null)" Variant="Variant.Filled" Color="Color.Primary"><AiAssistIcon />Draft shot</MudButton>@if (_pendingShotDraft is not null) { <button @onclick="RetryShotDraftEnqueue" disabled="@_shotDraftSubmitting">Retry saving request</button> }</Actions>
                     </TextAssistance></div>
                 </div>
-                <StudioToolTabs Items="@(new StudioTab[] { new("Shot", "Shot"), new("Takes", "Takes", ShotTakes.Count) })" Label="Shot view" GroupId="center" />
+                <StudioToolTabs Items="@(new StudioTab[] { new("Shot", "Shot"), new("Takes", "Takes", ShotTakes.Count, New: _selected is { } viewed ? NewTakeCount(viewed) : 0) })" Label="Shot view" GroupId="center" />
             }
         </Header><ChildContent>
             @if (SourceShot is { } source) { <section class="shot-coverage" data-workspace-panel="Shot" @key="source.Id">
                     <div class="shot-inline-fields shot-metadata"><label>Scene<select @ref="_shotSceneField" value="@source.SceneId" @onchange="AssignScene"><option value="">Choose a scene</option>@foreach (var scene in Scenes) { <option value="@scene.Id">@scene.Title</option> }</select></label>
                         <label>Duration (seconds)<input @ref="_shotDurationField" type="number" min="1" max="15" step="0.1" value="@Invariant(source.Duration)" @onchange="DurationChanged" /></label></div>
 
-                    @if (source.ApprovedScriptId != _approved?.Id) { <p class="field-hint">This shot uses an earlier saved script. Its saved source is unchanged.</p> }
+                    @if (SourceLinesChanged(source)) {
+                        <div class="shot-source-changed" role="status"><p>The script lines this shot was made from have changed. Check its action and dialogue against them.</p>
+                            <details><summary>Compare script lines</summary><div class="shot-source-compare"><section><h3>When the shot was made</h3><pre class="shot-source">@source.SourceExcerpt</pre></section><section><h3>Now</h3><pre class="shot-source">@CurrentSourceExcerpt(source)</pre></section></div></details>
+                            <button @onclick="MarkSourceChecked">Mark checked</button></div>
+                    }
+                    else if (SourceLinesRemoved(source)) { <p class="shot-source-changed" role="status">The script lines this shot was made from are no longer in the saved script.</p> }
                     <div class="shot-creative-workspace">
                         <ShotWorkspacePreview ProjectId="Id" ShotId="source.Id" SelectedTakeId="source.SelectedTakeId" Takes="ShotTakes" Review="OpenTake" />
                         <label class="shot-direction">Action and camera<textarea @ref="_shotDirectionField" rows="9" @bind:get="source.Description" @bind:set="value => EditCoverage(s => s.Description = value ?? string.Empty)" @bind:event="oninput" placeholder="Describe the action, staging, and camera movement in one continuous take."></textarea></label>
@@ -313,7 +318,7 @@ else
                     </fieldset>
                     @* References come first in this panel, so the prompt, written from them, is the step before generating. *@
                     <div class="shot-setup-actions shot-prompt-step">
-                        <button @ref="_setupPromptButton" class="@(PromptBlocksGeneration ? "next-step" : null)" aria-label="Prompt" @onclick="@(() => OpenSetupDialog("Prompt"))">Prompt <small>@SetupPromptStatus</small></button>
+                        <button @ref="_setupPromptButton" class="@(PromptStaleNote is not null ? "next-step stale" : PromptIsNextStep ? "next-step" : null)" aria-label="Prompt" title="@PromptStaleNote" aria-description="@PromptStaleNote" @onclick="@(() => OpenSetupDialog("Prompt"))">Prompt <small>@SetupPromptStatus</small></button>
                     </div>
                     @* A missing prompt is said by the highlighted Prompt step itself. *@
                     @if (GenerationIssue is { } issue && !(PromptBlocksGeneration && string.IsNullOrWhiteSpace(Current?.Prompt))) { <p role="status">@issue @if (GenerationIssueAction != "Review prompt") { <button @onclick="ReviewGenerationIssue">@GenerationIssueAction</button> }</p> }
@@ -401,8 +406,12 @@ else
             @if (_error is not null) { <div role="alert"><p>@_error</p>@if (_saveFailed) { <button @onclick="Reload">Reload saved version</button><button @onclick="DownloadDraft">Download unsaved copy</button> }</div> }
                 <section id="shot-setup-prompt-panel" data-setup-id="@composition.Id" hidden="@(_setupTab != "Prompt")">
                     <div class="prompt-review-guidance" role="status">
-                        @if (PromptNeedsReview) {
-                            <p>Check the prompt against your shot and reference labels, then choose <strong>Mark reviewed</strong>.</p>
+                        @if (string.IsNullOrWhiteSpace(composition.Prompt) && _compositionResult is null) {
+                            <p>No prompt yet. Choose <strong>Compose prompt</strong> to write one with AI from the shot and its references, or type it below.</p>
+                        }
+                        else if (PromptNeedsReview) {
+                            @if (_compositionResult is not null) { <p>AI changes are ready. Choose <strong>Review changes</strong> to compare them with your text; <strong>Mark reviewed</strong> keeps your text and dismisses them.</p> }
+                            else { <p>Check the prompt against your shot and reference labels, then choose <strong>Mark reviewed</strong>.</p> }
                             @if (CurrentPromptReferenceCheck is { NeedsAttention: true } referenceCheck) { <p class="field-hint">@referenceCheck.Detail</p> }
                             @if (SourceChanged) { <p class="field-hint">The shot direction changed. Check that the text matches the current shot.</p> }
                         }
@@ -431,10 +440,11 @@ else
                             }
                     }
                     @if (_compositionError is not null) { <p role="alert">@_compositionError</p> }
-                    @if (_compositionResult is null && !string.IsNullOrEmpty(_compositionRaw)) { <details><summary>Inspect AI response</summary><pre class="shot-source">@_compositionRaw</pre></details> }
-                    @if (CompositionPromptWarning is { } warning) { <p class="field-hint" role="status">Review note: @warning You can keep this text; this does not block saving or generation.</p> }
-                    <PromptEditor @ref="_promptEditor" @key="composition.ShotId" HistoryKey="@($"{_promptHistoryScope}:{composition.ShotId}")" Text="@composition.Prompt" TextChanged="text => PromptChanged(composition.ShotId, text)" PictureClicked="PreviewPicture" VideoClicked="PreviewVideo"><ToolbarActions>
-                    <div @ref="_compositionReviewOrigin"><TextAssistance Request="CompositionPresentation" Preparing="@(_compositionBusy && _compositionDialogJob is null)" HasError="@(_compositionEnqueue is not null)" ReviewRequested="InspectComposition" CancelRequested="CancelComposition" @ref="_compositionAssist" @key="(composition.ShotId, nameof(TextAssistance))" ProjectId="Id" Studio="TextAssistantStudio.Production" Title="Prompt assistance" SelectionChanged="CompositionModelChanged" Opened="StartContextEstimate" ModelLocked="@(_compositionBusy || CompositionJob?.LocksTarget == true)">
+                    @* The raw response is under Response details in the request dialog, as for other text requests; shown here it streamed in mid-dialog. *@
+                    @if (CompositionPromptWarning is { } warning) { <p class="prompt-review-note" role="status"><strong>Review note:</strong> @warning <span>You can keep this text; this does not block saving or generation.</span></p> }
+                    <PromptEditor @ref="_promptEditor" @key="composition.ShotId" Placeholder="Compose the prompt with AI, or start typing." HistoryKey="@($"{_promptHistoryScope}:{composition.ShotId}")" Text="@composition.Prompt" TextChanged="text => PromptChanged(composition.ShotId, text)" PictureClicked="PreviewPicture" VideoClicked="PreviewVideo"><ToolbarActions>
+                    @* With no prompt yet, composing one is the obvious next step. *@
+                    <div @ref="_compositionReviewOrigin" class="@(string.IsNullOrWhiteSpace(composition.Prompt) ? "assist-emphasis" : null)"><TextAssistance Label="@(string.IsNullOrWhiteSpace(composition.Prompt) ? "Compose prompt" : "Assist")" Request="CompositionPresentation" Preparing="@(_compositionBusy && _compositionDialogJob is null)" HasError="@(_compositionEnqueue is not null)" ReviewRequested="InspectComposition" CancelRequested="CancelComposition" @ref="_compositionAssist" @key="(composition.ShotId, nameof(TextAssistance))" ProjectId="Id" Studio="TextAssistantStudio.Production" Title="Prompt assistance" SelectionChanged="CompositionModelChanged" Opened="StartContextEstimate" ModelLocked="@(_compositionBusy || CompositionJob?.LocksTarget == true)">
                         <ExtraActions><button disabled="@(!CanClearPrompt)" title="Clear the prompt. References, settings, and Direction for AI stay." @onclick="ClearPrompt">Clear prompt</button></ExtraActions>
                         <ChildContent><p class="field-hint">@shot.Title</p>                    <label>Direction for AI<textarea rows="2" maxlength="20000" placeholder="For example: stay closer on her face, then reveal the monitor." @bind:get="composition.DirectingNotes" @bind:set="value => EditComposition(c => c.DirectingNotes = value ?? string.Empty)" @bind:event="oninput"></textarea></label>
 <fieldset class="composition-context" disabled="@(_compositionBusy || CompositionJob?.LocksTarget == true || _compositionEnqueue is not null)"><legend class="sr-only">Script context</legend>
@@ -443,7 +453,7 @@ else
     <label class="check-row"><input type="checkbox" @bind="_includeNearbyShots" @bind:after="RefreshCompositionSize" /><span>Include the shots before and after</span>
         <span class="composition-context-tokens" data-context="shots">@if (_contextSizeBusy) { <MudProgressCircular Size="Size.Small" Indeterminate="true" aria-label="Estimating size" /> } else if (_contextSize is { NearbyShots: 0 }) { @("none in this scene") } else if (_contextSize is { } shotsSize) { @($"≈{shotsSize.NearbyShotsTokens:N0} tokens") }</span></label>
     @* References are always sent; the row only shows what they cost. *@
-    <label class="check-row composition-context-fixed" title="References are always sent with the composition."><input type="checkbox" checked disabled /><span>References@(_contextSize is { ReferenceImages.Count: > 0 } refs ? $" · {refs.ReferenceImages.Count} image{(refs.ReferenceImages.Count == 1 ? "" : "s")}" : "")</span>
+    <label class="check-row composition-context-fixed" title="References are always sent with the composition."><input type="checkbox" checked disabled /><span>References@(_contextSize is { ReferenceImages.Count: > 0 } refs ? " · " + refs.DescribeImages() : "")</span>
         <span class="composition-context-tokens" data-context="references">@if (_contextSizeBusy) { <MudProgressCircular Size="Size.Small" Indeterminate="true" aria-label="Estimating size" /> } else if (_contextSize is { ReferenceImages.Count: 0 }) { @("no images") } else if (ReferenceTokens is { } referenceTokens) { @($"≈{referenceTokens:N0} tokens") }</span></label>
 </fieldset>
 @if (_compositionModel?.Model.Backend == AiBackend.ComfyUI && (_compositionStages is not null || _compositionSizeError is not null))
@@ -479,7 +489,7 @@ else
                     </ToolbarActions></PromptEditor>
                     @if (!string.IsNullOrWhiteSpace(composition.Prompt) && PromptReviewIssue is { } issue) { <p class="prompt-validation" role="alert">@issue</p> }
                     @if (!string.IsNullOrWhiteSpace(composition.ReferenceUsage)) { <details><summary>AI explanation</summary>@if (composition.Accepted?.Prompt != composition.Prompt) { <p class="field-hint">Explanation from the last AI composition, before your manual edits.</p> }<p>@composition.ReferenceUsage</p></details> }
-                    <button @onclick="CopyPrompt">Copy prompt</button>
+                    @if (!string.IsNullOrWhiteSpace(composition.Prompt)) { <button @onclick="CopyPrompt">Copy prompt</button> }
                     @if (EarlierShotContent.Any()) {
                         <details class="earlier-setup-content"><summary>Earlier setup prompts and references</summary>
                             <p class="field-hint">These versions were preserved when prompts and references moved to the shot. Restoring one keeps your generation settings.</p>
@@ -550,7 +560,8 @@ else
         <span role="status">@_saveStatus</span>
         <MudButton OnClick="UndoEdit" Disabled="@(_undo.Count == 0 || _setupBusy)">Undo</MudButton>
         <MudButton OnClick="CloseSetupDialog" Disabled="@(_compositionBusy || _closingSetupDialog || _setupBusy)" Variant="Variant.Outlined">Done</MudButton>
-        @if (_setupTab == "Prompt") { <MudButton OnClick="AcceptPrompt" Disabled="@(!CanAcceptPrompt)" Variant="Variant.Filled" Color="Color.Primary" title="Mark the current prompt reviewed as written, including any review notes.">Mark reviewed</MudButton> }
+        @* While AI changes wait, reviewing them is the next step; marking the text reviewed would dismiss them. *@
+        @if (_setupTab == "Prompt") { <MudButton OnClick="AcceptPrompt" Disabled="@(!CanAcceptPrompt)" Variant="@(_compositionResult is null ? Variant.Filled : Variant.Outlined)" Color="Color.Primary" title="@(_compositionResult is null ? "Mark the current prompt reviewed as written, including any review notes." : "Keep the current prompt as written and dismiss the AI changes waiting under Review changes.")">Mark reviewed</MudButton> }
     </DialogActions>
 </InlineDialog>
 
@@ -627,7 +638,7 @@ else
             @if (!string.IsNullOrWhiteSpace(proposed.ReferenceUsage)) { <details><summary>AI explanation</summary><p>@proposed.ReferenceUsage</p></details> }
         }
     </DialogContent>
-    <DialogActions>@if (_compositionResult is not null && Current is not null && _compositionChanged is not null && _compositionApplyError is null) { <AssistedApplyWarning Changed="_compositionChanged" Consequence="Applying can be undone." /> }<MudButton OnClick="CloseCompositionReview" Disabled="_compositionBusy">Close</MudButton><MudButton OnClick="DiscardCompositionResult" Disabled="_compositionBusy">Discard</MudButton><MudButton OnClick="ApplyCompositionResult" Disabled="@(_compositionBusy || _compositionResult is null)" Variant="Variant.Filled" Color="Color.Primary">@(_compositionChanged is null ? "Apply changes" : AssistedApplyWarning.ApplyAnyway)</MudButton></DialogActions>
+    <DialogActions>@if (_compositionResult is not null && Current is not null && _compositionChanged is not null && _compositionApplyError is null) { <AssistedApplyWarning Changed="_compositionChanged" Consequence="Applying can be undone." /> }<MudButton OnClick="CloseCompositionReview" Disabled="_compositionBusy">Close</MudButton><MudButton OnClick="NewCompositionFromReview" Disabled="_compositionBusy">New request</MudButton><MudButton OnClick="DiscardCompositionResult" Disabled="_compositionBusy">Discard</MudButton><MudButton OnClick="ApplyCompositionResult" Disabled="@(_compositionBusy || _compositionResult is null)" Variant="Variant.Filled" Color="Color.Primary">@(_compositionChanged is null ? "Apply changes" : AssistedApplyWarning.ApplyAnyway)</MudButton></DialogActions>
 </InlineDialog>
 
 <InlineDialog Visible="_reviewOpen" VisibleChanged="ReviewVisibility" Options="LargeDialog" Class="shot-review-dialog" DefaultFocus="DefaultFocus.FirstChild"

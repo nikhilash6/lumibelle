@@ -49,6 +49,15 @@ public partial class ReferenceReelsPanel
     private TextAssistance? _assist;
     private TextModelSelectionState? _model;
     private bool _busy, _saving, _saveFailed, _disposed, _picturesOpen, _reviewOpen, _importOpen;
+    // MudDialog hides itself on Escape even when the panel cannot close yet. A close asked for while busy
+    // is kept and applied once the panel is free, so the dialog does not reappear with its request link.
+    private bool _closeReviewWhenIdle;
+    private void ReviewVisibility(bool visible)
+    {
+        if (visible) return;
+        if (_busy) { _closeReviewWhenIdle = true; return; }
+        _reviewOpen = false;
+    }
     private string _filter = "all", _raw = "", _takeId = "", _importName = "", _importGuidance = ShotVideoBinding.DefaultDescription;
     private string _detailName = "", _detailGuidance = "";
     private string _directionSourceId = "";
@@ -72,7 +81,7 @@ public partial class ReferenceReelsPanel
         try { await JS.InvokeVoidAsync("navigator.clipboard.writeText", text); _directionsCopyNotice = "Copied. Paste into Instructions in another reel's Assist."; }
         catch (JSException) { _directionsCopyNotice = "Select and copy the saved directions."; }
     }
-    private string? _error, _reviewError;
+    private string? _error, _reviewError, _saveError;
     private Shot? _pictureDraft;
     private Guid? _pictureExpanded;
     private ReelPromptPair? _pair, _unappliedPair;
@@ -138,6 +147,8 @@ public partial class ReferenceReelsPanel
     private AiJobHeader? CompositionJob => RelevantJobs.FirstOrDefault(j => j.Kind == AiJobKind.ReelComposition && j.Target.ReelId == _draft?.Id && j.Id == _draft?.PendingJobId);
     private TextRequestPresentation? ReelCompositionPresentation => CompositionJob is { } job ? new(job, "Writing prompt pair…",
         _draft!.ResolvedJobs.Contains(job.Id) ? TextRequestOutcome.Resolved : TextRequestOutcome.Proposal, "Prompt pair") : null;
+    // Starts over in the composer; the reviewed pair stays to apply or discard later.
+    private async Task NewPairFromReview() { _reviewOpen = false; if (_assist is not null) await _assist.NewRequestAsync(); }
     private Task InspectComposition() => CompositionJob is { } job ? ViewJob(job) : Task.CompletedTask;
     private Task CancelComposition() => CompositionJob is { } job ? Jobs.CancelAsync(job.Id) : Task.CompletedTask;
     private AiJobHeader? ActiveComposition => RelevantJobs.FirstOrDefault(j => j.Kind == AiJobKind.ReelComposition && j.Target.ReelId == _draft?.Id && j.LocksTarget);
@@ -174,6 +185,7 @@ public partial class ReferenceReelsPanel
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
+        if (_closeReviewWhenIdle && !_busy) { _closeReviewWhenIdle = false; _reviewOpen = false; StateHasChanged(); return; }
         await RestoreSetupFocus();
         if (_lastClearAvailability != CanClearCreation)
         {
@@ -295,18 +307,24 @@ public partial class ReferenceReelsPanel
         try
         {
             if (_draft is null || _saved is not null && ReferenceReels.Fingerprint(_draft) == ReferenceReels.Fingerprint(_saved) &&
-                _draft.PendingJobId == _saved.PendingJobId && _draft.ResolvedJobs.SequenceEqual(_saved.ResolvedJobs)) return;
+                _draft.PendingJobId == _saved.PendingJobId && _draft.ResolvedJobs.SequenceEqual(_saved.ResolvedJobs)) { SaveSucceeded(); return; }
             _draft.SaveLosslessFrames ??= true;
             _saving = true; var captured = _draft.Copy(); ReferenceReelDraft? saved = null;
             await Mutate(async _ => { saved = await Reels.SaveDraftAsync(ProjectId, captured, _saved?.Revision ?? 0, _lifetime.Token); return await AssetStore.LoadAsync(ProjectId, _lifetime.Token); });
             if (_draft.Id == captured.Id) { _draft.Revision = saved!.Revision; _saved = saved.Copy(); }
-            _saveFailed = false;
+            SaveSucceeded();
         }
-        catch { _saveFailed = true; throw; }
+        catch (Exception e) { _saveFailed = true; _saveError = e.Message; throw; }
         finally { _saving = false; _saveGate.Release(); }
     }
+    // Correcting a recipe, or returning it to what is already saved, clears the error its failed save reported; other errors stay.
+    private void SaveSucceeded()
+    {
+        if (_saveError is not null && _error == _saveError) _error = null;
+        _saveError = null; _saveFailed = false;
+    }
     private async Task Run(Func<Task> action)
-    { if (_busy) return; _busy = true; _error = null; try { await action(); } catch (Exception e) { _error = e.Message; } finally { _busy = false; } }
+    { if (_busy) return; _busy = true; _error = null; try { await action(); } catch (Exception e) { _error = e.Message; } finally { _busy = false; if (_closeReviewWhenIdle) StateHasChanged(); } }
     private AssetImage? PictureMedia(ShotImageBinding image) => Library.Assets.FirstOrDefault(a => a.Id == image.AssetId)?.Images.FirstOrDefault(i => i.Id == image.MediaId);
     private async Task OpenPictures(Guid? expanded = null)
     {
@@ -403,7 +421,7 @@ public partial class ReferenceReelsPanel
                 catch (WorkspaceStoreException) { }
             }
             if (_draft.ResolvedJobs.Contains(job.Id)) _reviewError = "This response has already been applied or discarded.";
-            _reviewOpen = true;
+            _reviewOpen = true; _closeReviewWhenIdle = false;
         }
         catch (Exception e) { _error = e.Message; }
     }

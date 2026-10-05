@@ -1,6 +1,7 @@
 import { openShotSetup } from './workspace-tools.js';
 import { test, expect } from './fixtures.js';
 import { scriptAssist } from './text-assistance-tools.js';
+import { chooseReelReferences, reelFraming } from './reel-tools.js';
 const jobs = async (request, id) => (await (await request.get('/fixtures/ai-jobs')).json()).filter(j => j.target.projectId === id);
 const workflows = ['script', 'extraction', 'enhancement', 'guidance', 'planning', 'prompt', 'reel'];
 for (const narrow of [false, true]) for (const workflow of workflows) {
@@ -49,16 +50,14 @@ for (const narrow of [false, true]) for (const workflow of workflows) {
      control = page.locator('#shot-setup-prompt-panel .request-action-button'); start = control;
      review = page.locator('.ai-assist-dialog');
     } else {
-     await reveal('right');
-     const tools = page.locator('.reel-tools');
-     await tools.getByRole('button', { name: 'Manage reel references' }).click();
-     const pictures = page.locator('.reel-pictures-dialog');
-     await pictures.locator(`[data-reference="${owner.id}/${owner.images[0].id}"]`).click();
+     // Like the shot prompt, the reel request control is in the reel's Prompt dialog, beside its framing.
+     const pictures = await chooseReelReferences(page, [`${owner.id}/${owner.images[0].id}`]);
      await pictures.getByRole('button', { name: 'Apply changes', exact: true }).click();
-     control = tools.locator('.request-action-button'); start = control; review = page.locator('.reel-review-dialog');
+     await expect(pictures).toBeHidden();
+     await (await reelFraming(page)).getByLabel('Framing preset', { exact: true }).selectOption('Custom');
+     control = page.locator('#reel-setup-prompt-panel .request-action-button'); start = control; review = page.locator('.reel-review-dialog');
     }
     await start.click(); composer = page.locator('.ai-assist-dialog').last();
-    if (workflow === 'reel') await composer.getByLabel('Framing preset', { exact: true }).selectOption('Custom');
     if (workflow === 'reel' || workflow === 'prompt') {
      await composer.locator('.model-chip').click();
      await page.getByRole('combobox', { name: 'Text model', exact: true }).selectOption({ label: 'OpenRouter · Alternate mock model' });
@@ -78,14 +77,15 @@ for (const narrow of [false, true]) for (const workflow of workflows) {
    const close = review.getByRole('button', { name: 'Close', exact: true }).last();
    await close.click(); await expect(review).toBeHidden();
    if (narrow) {
-    if (['script', 'enhancement', 'reel'].includes(workflow)) await reveal('right');
+    if (['script', 'enhancement'].includes(workflow)) await reveal('right');
     else if (['extraction', 'planning'].includes(workflow)) await reveal('left');
    }
    await expect(control).toBeInViewport();
    expect((await jobs(request, id)).map(j => j.id)).toEqual(captured.map(j => j.id));
    if (workflow === 'planning' || workflow === 'reel') await page.screenshot({ path: `artifacts/compact-${workflow}-${narrow ? 'narrow' : 'desktop'}.png` });
-   const menu = control.locator('..').locator('.request-action-menu');
-   await menu.locator('summary').click(); await menu.getByRole('button', { name: 'Cancel request', exact: true }).click();
+   // The request's own review cancels it.
+   await control.click(); await expect(review).toBeVisible();
+   await review.getByRole('button', { name: /^Cancel (request|enhancement|suggestion)$/ }).last().click();
    await expect.poll(async () => (await jobs(request, id))[0].state).toBe('Cancelled');
    await expect(control).not.toContainText('Queued'); await expect(control).toBeEnabled();
    await expect(control.locator('.request-time')).toHaveCount(0);

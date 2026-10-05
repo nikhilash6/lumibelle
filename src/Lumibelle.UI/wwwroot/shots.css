@@ -92,7 +92,9 @@
 .ai-assist-dialog .composition-context .check-row { display:flex; align-items:center; gap:8px; margin:6px 0; padding:0; line-height:1.4; }
 .composition-context .composition-context-fixed { color: var(--lumi-text-muted); }
 .composition-context .check-row input { flex:none; width:auto; margin:0; }
-.composition-context-tokens { margin-left:auto; padding-left:12px; color: var(--lumi-text-muted); font-weight:400; font-variant-numeric: tabular-nums; white-space:nowrap; }
+.composition-context-tokens { margin-left:auto; padding-left:12px; color: var(--lumi-text-muted); font-weight:400; font-variant-numeric: tabular-nums; white-space:nowrap; display:inline-flex; align-items:center; height:1.4em; }
+/* A text-sized spinner, so rows are as tall while estimating as after. */
+.composition-context-tokens .mud-progress-circular { width:14px !important; height:14px !important; }
 .shot-start-frame { display:grid; grid-template-columns:96px minmax(0,1fr) auto; gap:10px; align-items:center; padding:8px; border: 1px solid var(--line); border-radius: var(--lumi-radius-control); background: var(--lumi-surface); }
 .shot-start-frame img { width:96px; aspect-ratio:16 / 9; object-fit:cover; border-radius: var(--lumi-radius-control); background: var(--lumi-media-stage); }
 .shot-start-frame-text { display:flex; flex-direction:column; gap:2px; min-width:0; font-size:var(--lumi-font-size-meta); overflow-wrap:anywhere; }
@@ -243,6 +245,10 @@
 .workspace-pane:is(.shot-controls, .reel-tools) .shot-setup-actions > button.next-step { border-color:var(--plum); box-shadow:inset 0 0 0 1px var(--plum); background:rgba(var(--lumi-accent-rgb),.12); color:var(--plum); font-weight:600; }
 .workspace-pane:is(.shot-controls, .reel-tools) .shot-setup-actions > button.next-step:hover { background:rgba(var(--lumi-accent-rgb),.2); }
 .shot-setup-actions > button.next-step small { color:var(--plum); font-weight:400; }
+/* A prompt written before its references or shot changed needs a review or a rewrite: amber, its tooltip saying so. */
+.workspace-pane:is(.shot-controls, .reel-tools) .shot-setup-actions > button.next-step.stale { border-color:var(--lumi-warning-border); box-shadow:inset 0 0 0 1px var(--lumi-warning-border); background:var(--lumi-warning-surface); color:var(--lumi-warning); }
+.workspace-pane:is(.shot-controls, .reel-tools) .shot-setup-actions > button.next-step.stale:hover { background:var(--lumi-warning-surface); filter:brightness(.97); }
+.shot-setup-actions > button.next-step.stale small { color:var(--lumi-warning); font-weight:600; }
 .workspace-pane:is(.shot-controls, .reel-tools) .generation-output { border:0; margin:0; padding:0; min-width:0; display:grid; gap:8px; }
 .generation-output-row { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
 .workspace-pane:is(.shot-controls, .reel-tools) .generation-output label { display:block; min-width:0; margin:0; font-size:var(--lumi-font-size-meta); color:var(--muted); }
@@ -272,6 +278,8 @@
 .shot-setup-dialog :is(.shot-generation, .shot-aspect) { max-width:42rem; margin-inline:auto; }
 .shot-setup-dialog .mud-dialog-actions > [role=status] { margin-right:auto; color:var(--muted); font-size:var(--lumi-font-size-meta); }
 .shot-setup-dialog .prompt-editor-host .tiptap { min-height:22rem; }
+/* A long prompt scrolls inside its box, so the notes above it and the dialog's actions stay in reach. */
+.shot-setup-dialog .prompt-editor-host .tiptap { max-height:min(32rem, 55vh); overflow-y:auto; }
 .prompt-review-guidance { margin-block:16px; }
 .prompt-review-guidance p { margin:4px 0; }
 .prompt-shot-preparation { display:flex; align-items:center; flex-wrap:wrap; gap:8px 12px; margin-bottom:16px; padding:10px 12px; background:var(--lumi-surface-subtle); border-radius:var(--lumi-radius-control); color:var(--muted); font-size:var(--lumi-font-size-meta); }
@@ -303,8 +311,11 @@
 .prompt-toolbar label { display: flex; gap: .4rem; align-items: center; }
 .prompt-editor-host { border: 1px solid var(--lumi-border); border-radius: var(--lumi-radius-surface); background: var(--lumi-surface); }
 .prompt-editor-host .tiptap { min-height: 18rem; padding: 1.1rem; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.75; font-size: var(--lumi-font-size-ui); outline: none; }
-.prompt-editor-host:focus-within { border-color: var(--lumi-accent); box-shadow: 0 0 0 2px var(--lumi-shadow-color); }
+/* The box shows focus; the global focus ring on the editable text inside it would draw a second, heavier frame. */
+.prompt-editor-host:focus-within { border-color: var(--lumi-accent); box-shadow: 0 0 0 1px rgba(var(--lumi-accent-rgb), .25); }
+.prompt-editor-host .tiptap:focus-visible { outline: none !important; }
 .prompt-editor-host [data-prompt-line]:empty::after { content: '\200b'; }
+.prompt-editor-host .tiptap > [data-prompt-line]:only-child:is(:empty, :has(> br:only-child))::before { content: var(--prompt-placeholder, none); position: absolute; color: var(--muted); pointer-events: none; }
 .styled-text .prompt-section-heading { color: var(--lumi-accent); font-weight: 700; font-size: var(--lumi-font-size-compact); letter-spacing: .035em; margin-top: .85rem; }
 .styled-text .prompt-dialogue { border-left: 2px solid var(--lumi-border); padding-left: .7rem; }
 .styled-text .prompt-reference { color: var(--lumi-accent); background: var(--lumi-surface-subtle); border-radius: var(--lumi-radius-small); }
@@ -313,6 +324,14 @@
 @media(max-width:649px) { .shot-video-reference-dialog { margin:8px !important; width:calc(100% - 16px) !important; max-height:calc(100dvh - 16px) !important; } .shot-video-reference-dialog .mud-dialog-content { padding:8px 12px; } }
 .exact-text .tiptap { font-family: ui-monospace, Consolas, monospace; font-size: var(--lumi-font-size-compact); }
 .prompt-validation { padding: .7rem; background: var(--lumi-warning-surface); border-left: 3px solid var(--lumi-warning-border); margin-top: .6rem; }
+.prompt-review-note { padding: .7rem; background: var(--lumi-warning-surface); border-left: 3px solid var(--lumi-warning-border); color: var(--lumi-warning); margin: .6rem 0; }
+.prompt-review-note span { color: var(--muted); }
+.shot-source-changed { padding: .7rem; background: var(--lumi-warning-surface); border-left: 3px solid var(--lumi-warning-border); margin: 0 0 16px; }
+.shot-source-changed p { margin: 0 0 .5rem; }
+.shot-source-changed > :last-child { margin-bottom: 0; }
+.shot-source-changed details { margin-bottom: .5rem; }
+.shot-source-compare { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: 12px; margin-top: .5rem; }
+.shot-source-compare h3 { margin: 0 0 4px; font-size: var(--lumi-font-size-small); color: var(--muted); }
 .composition-size { margin: .6rem 0; }
 .composition-size-steps { list-style: none; margin: .5rem 0 0; padding: 0; display: grid; gap: .4rem; }
 .composition-size-steps li { display: flex; flex-wrap: wrap; align-items: baseline; gap: .15rem .6rem; padding: .35rem .6rem; border-left: 3px solid var(--lumi-border); }
@@ -339,6 +358,13 @@
 /* Not yet seen: quieter than Selected, so both can share a caption. */
 .new-take-badge { color: var(--plum); border: 1px solid var(--plum); border-radius: var(--lumi-radius-pill); font-size: var(--lumi-font-size-small); font-weight: 600; padding: .1rem .5rem; }
 .shot-new-takes { color: var(--plum); font-weight: 600; }
+/* Takes in progress for a shot, on a line of its own: a pulsing dot while generating, a still one while queued. */
+.shot-generating { display: block; margin-top: 2px; color: var(--plum); font-weight: 600; white-space: nowrap; }
+.shot-generating i { display: inline-block; width: 7px; height: 7px; margin-right: 4px; border-radius: 50%; background: currentColor; vertical-align: 1px; }
+.shot-generating.generating i { animation: shot-generating-pulse 1.4s ease-in-out infinite; }
+.shot-generating.queued { color: var(--muted); }
+@keyframes shot-generating-pulse { 50% { opacity: .25; } }
+@media (prefers-reduced-motion: reduce) { .shot-generating.generating i { animation: none; } }
 .empty-takes { padding: 2rem; text-align: center; color: var(--lumi-text-muted); }
 
 .reference-crop-preview { padding: 0; border: 0; background: none; }
@@ -363,6 +389,10 @@
 .studio-workspace[data-studio=Shots] button.shot-list-row { display:flex; align-items:center; gap:10px; padding:10px 8px; color:var(--ink); }
 .shot-list-thumbnail { display:grid; place-items:center; flex:0 0 60px; width:60px; height:48px; border-radius:var(--lumi-radius-control, 6px); background:var(--lumi-surface-subtle); overflow:hidden; color:var(--muted); }
 .shot-list-thumbnail img { width:100%; height:100%; object-fit:cover; }
+/* The shown take's size, so shots still at a draft size are easy to spot for a Detail or Native regenerate. */
+.shot-list-thumbnail { position:relative; }
+.shot-list-resolution { position:absolute; right:2px; bottom:2px; padding:0 4px; border-radius:var(--lumi-radius-small); background:rgba(0,0,0,.62); color:#fff; font-size:10px; font-weight:600; line-height:15px; white-space:nowrap; }
+.shot-list-resolution.draft { background:var(--lumi-warning-surface); color:var(--lumi-warning); box-shadow:0 0 0 1px var(--lumi-warning-border); }
 .shot-list-copy { min-width:0; flex:1; }
 .shot-list-title { display:block; font-weight:550; line-height:1.4; }
 .shot-list-row.selected .shot-list-title { font-weight:650; }
@@ -382,7 +412,8 @@
 .studio-workspace[data-studio=Shots] .shot-direction textarea { flex:1; min-height:230px; }
 .shot-workspace-preview { min-width:0; overflow:hidden; }
 .shot-workspace-preview > video { display:block; width:100%; aspect-ratio:16/9; max-height:280px; object-fit:contain; background:var(--lumi-media-stage); border-radius:var(--lumi-radius-surface); }
-.shot-preview-caption { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; padding:10px 0 0; font-size:var(--lumi-font-size-meta); }
+.shot-preview-caption { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; padding:0 0 8px; font-size:var(--lumi-font-size-meta); }
+.shot-preview-caption > p { flex-basis:100%; margin:0; }
 .shot-preview-caption strong { font-size:var(--lumi-font-size-meta); }
 .shot-preview-caption small { display:block; color:var(--muted); margin-top:2px; font-size:var(--lumi-font-size-small); }
 .shot-preview-actions { display:flex; gap:4px; }
@@ -418,8 +449,14 @@
 .shot-generation-footer .mud-button-root { min-height:38px; }
 @media (pointer:coarse) { .shot-generation-footer .mud-button-root { min-height:44px; } }
 @container (min-width:600px) {
-    .shot-creative-workspace { grid-template-columns:minmax(0,1.1fr) minmax(0,1fr); align-items:start; gap:20px; }
-    .studio-workspace[data-studio=Shots] .shot-direction textarea { min-height:270px; }
+    /* Two shared rows: the take caption beside the Action and camera label, then the video beside the text, which takes the video's height. */
+    .shot-creative-workspace { grid-template-columns:minmax(0,1.1fr) minmax(0,1fr); grid-template-rows:auto auto; column-gap:20px; row-gap:8px; }
+    .shot-creative-workspace > :is(.shot-workspace-preview, .shot-direction) { grid-row:span 2; display:grid; grid-template-rows:subgrid; align-content:start; }
+    .shot-creative-workspace .shot-preview-caption { align-self:end; padding:0; }
+    .shot-creative-workspace .shot-preview-empty { grid-row:2; min-height:270px; }
+    .shot-creative-workspace .shot-workspace-preview > video { align-self:stretch; height:100%; }
+    .studio-workspace[data-studio=Shots] .shot-direction { display:grid; align-items:end; }
+    .studio-workspace[data-studio=Shots] .shot-direction textarea { align-self:stretch; margin:0; min-height:180px; contain:size; }
 }
 @media (max-width:759px) {
     .studio-workspace[data-studio=Shots] .shot-editor > .workspace-pane-body { padding:12px; }

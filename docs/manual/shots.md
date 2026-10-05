@@ -2,11 +2,13 @@
 
 **Shots** combines coverage, references, prompt writing and takes in one workspace. **Shot / Takes** switch the center view. Manual editing works without AI or video models.
 
+Each shot keeps the script lines it was made from. If those lines change in a later saved script, the shot says so above its preview: **Compare script lines** shows them then and now, and **Mark checked** takes the current lines once the action and dialogue fit. Saving changes elsewhere in the script does not affect the shot.
+
 ## Shot view
 
 Edit the title in the heading, with scene, duration, action/camera, dialogue and an inline take preview in **Shot**. Cast and other supporting details expand below. Browsing the preview does not change the selected production take.
 
-The shot list groups shots by script scene. Click a scene heading to collapse it; collapsed scenes are remembered per project. Drag a shot by its ⠿ handle to reorder it within its scene, or click the handle for **Move to…**. Each shot's **⋯** menu moves it up or down, opens **Move to…**, duplicates it, opens its **Language versions** or deletes it. Shots stay within their scene, and **Undo** reverses a move. Bulk operations are in **Bulk operations**. Duplicating a shot copies coverage only.
+The shot list groups shots by script scene. Each thumbnail shows its selected take (or latest) with its size, such as **0.7 MP**; Quick and Preview sizes are marked in amber, so shots still waiting for a Detail or Native regenerate stand out. A shot whose takes are being generated shows **Generating** (or **Queued**) beside its take count. Click a scene heading to collapse it; collapsed scenes are remembered per project. Drag a shot by its ⠿ handle to reorder it within its scene, or click the handle for **Move to…**. Each shot's **⋯** menu moves it up or down, opens **Move to…**, duplicates it, opens its **Language versions** or deletes it. Shots stay within their scene, and **Undo** reverses a move. Bulk operations are in **Bulk operations**. Duplicating a shot copies coverage only.
 
 **Draft shot**, at the right of the shot heading, drafts the selected shot with AI from its scene in the saved script, for example after **+ Shot** when the breakdown missed a moment. The scene's other shots are sent as context, so the draft covers something they don't unless your directions say otherwise; a shot that already has action or dialogue is sent too, for the directions to revise. Review the proposed title, duration, action, dialogue, cast and sound, then **Apply to this shot** or **Dismiss** it. Applying keeps the shot's references, takes and existing cast, and **Undo** restores the previous version.
 
@@ -34,7 +36,7 @@ Reference or shot changes preserve your prompt and show **Check prompt**. **Clea
 
 [Reviewing generated takes](https://lumibelle.ai/media/manual/shots-take-review.mp4)
 
-The dedicated **Takes** view shows large previews, newest first, with a selected badge and an optional setup filter. Retries and **One more take** reuse their batch's captured inputs.
+The dedicated **Takes** view shows large previews, newest first, with a selected badge and an optional setup filter. Its tab shows how many takes are new, such as **1 new**, until you open it or review their batch. Retries and **One more take** reuse their batch's captured inputs.
 
 Click a take to review it. The player steps through single frames with **‹ ›** or the `[` and `]` keys. Below it, **Save frame to Assets** saves the paused frame as an image, and **Continue from this frame** makes a shot start from it. Under the player are the take's settings and any changes since it was made, **Improve quality**, and its details: the file and **Download MP4**, the generation details, timings, LoRAs and the references it was submitted with. The takes of the same batch are listed beside the player, each with **Use this take** and **Discard**.
 
