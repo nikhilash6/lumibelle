@@ -53,6 +53,8 @@ Choose **Edit project** on the project overview to change its name or descriptio
 
 Back up or move a project by copying its complete folder, retaining its ID and manifest. To reopen a copied project, place that folder in the configured library and refresh the hub. Choose a new library root before copying if that ID already exists there.
 
+**Project settings → Storage → Move to folder…** keeps a project in a folder of your choice, such as a synced drive or a git repository, and **Open project folder** on Your projects adds such a folder to the library. A project moved to a folder gets a `.gitignore` (the open-project lock and files left by an interrupted save) and a `.gitattributes` (`* -text`, so git stores every file byte-for-byte, as Lumibelle checks media sizes and hashes). Neither replaces a file the folder already has.
+
 Keep complete project folders in backups. Chat and proposals may contain copies of source text supplied to a model.
 
 Invalid, unreadable or unsupported manifests produce warnings while healthy projects remain available. Fix those manifests externally and refresh; Lumibelle does not silently overwrite them. Interrupted project creation is ignored.
@@ -63,7 +65,8 @@ Invalid, unreadable or unsupported manifests produce warnings while healthy proj
 
 - **Empty this project's Trash**: the same as Empty Trash filtered to this project.
 - **Lossless take archives** and **Lossless reel archives**: takes and reels keep their MP4. Every reel keyframe already chosen from lossless frames is saved as a picture first, so reference images, RefMod inputs and prompts are unchanged. Paused frames and new keyframes are then decoded from the MP4.
-- **Copies left by saved reels**: saving a generated reel copies its video and lossless frames to Assets and leaves the originals in its generation folder. Once the reel is saved, those copies are no longer read. Generation inputs of shots stay, because Regenerate, language versions and One more take use them.
+- **Copies left by saved reels**: saving a generated reel copies its video and lossless frames to Assets and leaves the originals in its generation folder. Once the reel is saved, those copies are no longer read.
+- **Repeated generation inputs**: each generation used to keep its own copy of the same cropped references and voice excerpts. Generations now keep one shared copy of each in `shots/input-store`, found by its hash; this moves older generations' copies there too. Regenerate, language versions and One more take keep working.
 - **Migration backups**: copies of `production.json` saved before an automatic upgrade, which Lumibelle does not read.
 - **Package manifest**: an unzipped project package keeps `manifest.json` beside its `project` folder; once the project is edited it no longer matches. The unzipped folder still opens without it.
 
